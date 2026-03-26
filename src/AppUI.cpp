@@ -231,16 +231,48 @@ void AppUI::DrawRightPanel() {
             ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.22f, 0.23f, 0.29f, 1.0f));
             ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 4.0f);
             
-            // 动态高度
-            ImGui::BeginChild("ErrorCard", ImVec2(0, 110), true, ImGuiWindowFlags_NoScrollbar);
+            // 旧版 ImGui 不支持 ImGuiChildFlags，手动计算高度
+            float wrap_width = ImGui::GetContentRegionAvail().x - ImGui::GetStyle().FramePadding.x * 2.0f - 20.0f;
+            ImVec2 exp_size = ImGui::CalcTextSize(err.explanation.c_str(), nullptr, false, wrap_width);
+            float card_height = exp_size.y + 120.0f; 
             
-            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "❌ 发现错误: %s", err.wrong_text.c_str());
-            ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "✅ 修改建议: %s", err.correction.c_str());
+            ImGui::BeginChild("ErrorCard", ImVec2(0, card_height), true, ImGuiWindowFlags_NoScrollbar);
+            
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "❌ 发现错误: ");
+            ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0, 0, 0, 0));
+            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.4f, 1.0f));
+            ImGui::InputText("##wrong", (char*)err.wrong_text.c_str(), err.wrong_text.size() + 1, ImGuiInputTextFlags_ReadOnly);
+            ImGui::PopStyleColor(2);
+            
+            // 可选中且带快捷复制的修改建议
+            ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "✅ 修改建议: ");
+            ImGui::SameLine();
+            
+            float avail_w = ImGui::GetContentRegionAvail().x;
+            ImGui::SetNextItemWidth(avail_w - 70.0f);
+            
+            ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0, 0, 0, 0));
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 1.0f, 0.4f, 1.0f)); 
+            ImGui::InputText("##fix", (char*)err.correction.c_str(), err.correction.size() + 1, ImGuiInputTextFlags_ReadOnly | ImGuiInputTextFlags_AutoSelectAll);
+            ImGui::PopStyleColor(2);
+            
+            ImGui::SameLine();
+            if (ImGui::Button("📋 复制")) {
+                ImGui::SetClipboardText(err.correction.c_str());
+            }
+            
             ImGui::Separator();
             
-            ImGui::PushTextWrapPos(0.0f);
-            ImGui::Text("💡 解析: %s", err.explanation.c_str());
-            ImGui::PopTextWrapPos();
+            ImGui::Text("💡 解析: ");
+            
+            // 可选中的多行文本解释说明
+            ImVec2 box_size = ImVec2(-FLT_MIN, exp_size.y + ImGui::GetStyle().FramePadding.y * 2.0f);
+            
+            ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0, 0, 0, 0));
+            ImGui::InputTextMultiline("##exp", (char*)err.explanation.c_str(), err.explanation.size() + 1, box_size, ImGuiInputTextFlags_ReadOnly);
+            ImGui::PopStyleColor();
             
             ImGui::EndChild();
             
