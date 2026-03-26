@@ -3,8 +3,17 @@ import os
 import json
 import urllib.request
 import urllib.error
+import logging
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
+
+# 设定日志配置
+log_level = logging.DEBUG if "--debug" in sys.argv else logging.INFO
+logging.basicConfig(
+    level=log_level, 
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    datefmt='%H:%M:%S'
+)
 
 config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 try:
@@ -12,6 +21,7 @@ try:
         config = json.load(f)
     API_KEY = config.get("API_KEY", "")
 except Exception as e:
+    logging.warning(f"Failed to load config.json: {e}")
     API_KEY = ""
 
 URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={API_KEY}"
@@ -47,13 +57,16 @@ Respond ONLY with a valid JSON object in the exact following structure. Do not i
         }
     }
     
-    req = urllib.request.Request(URL, data=json.dumps(data).encode('utf-8'), headers={'Content-Type': 'application/json'})
+    req_body = json.dumps(data).encode('utf-8')
+    logging.debug(f"Gemini Request Payload: {req_body.decode('utf-8')}")
+    req = urllib.request.Request(URL, data=req_body, headers={'Content-Type': 'application/json'})
     
     try:
         response = urllib.request.urlopen(req)
         response_body = response.read().decode('utf-8')
-        result_json = json.loads(response_body)
+        logging.debug(f"Gemini Response Body: {response_body}")
         
+        result_json = json.loads(response_body)
         content_text = result_json.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '{}')
         
         try:
@@ -66,6 +79,7 @@ Respond ONLY with a valid JSON object in the exact following structure. Do not i
             return json.loads(content_text.strip())
         
     except Exception as e:
+        logging.error(f"Gemini API Error: {e}")
         return {"error": str(e), "completion": "", "grammar_errors": []}
 
 class RequestHandler(BaseHTTPRequestHandler):
@@ -73,21 +87,25 @@ class RequestHandler(BaseHTTPRequestHandler):
         if self.path == '/analyze':
             content_length = int(self.headers.get('Content-Length', 0))
             post_data = self.rfile.read(content_length)
+            logging.debug(f"HTTP POST /analyze received {content_length} bytes")
             
             try:
                 request_json = json.loads(post_data.decode('utf-8'))
                 text = request_json.get('text', '')
+                logging.info(f"📝 收到打字请求文本: {repr(text)}")
                 
                 result = analyze_text(text)
+                logging.info(f"✨ 返回分析结果: 补全='{result.get('completion','')}' | 发现语法错误={len(result.get('grammar_errors',[]))}处")
+                logging.debug(f"Full JSON Response: {json.dumps(result, ensure_ascii=False)}")
                 
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
                 self.end_headers()
                 self.wfile.write(json.dumps(result, ensure_ascii=False).encode('utf-8'))
             except ConnectionAbortedError:
-                # Client disconnected before we could send the response
-                pass
+                logging.warning("客户端已先行断开连接 (可能因为超时)，已终止发送。")
             except Exception as e:
+                logging.error(f"处理请求时发生内部错误: {e}", exc_info=True)
                 try:
                     self.send_response(400)
                     self.send_header('Content-Type', 'application/json; charset=utf-8')
@@ -99,9 +117,9 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
             
-    # Disable default logging to keep terminal clean
     def log_message(self, format, *args):
-        pass
+        # 将原生的 HTTP 日志引导进 logging 系统
+        logging.info("🌐 " + format % args)
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     def handle_error(self, request, client_address):
@@ -115,15 +133,16 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 def run_server(port=5000):
     server_address = ('127.0.0.1', port)
     httpd = ThreadedHTTPServer(server_address, RequestHandler)
-    print(f"Starting Gemini Local HTTP Service on http://127.0.0.1:{port}")
+    logging.info(f"🚀 Starting Gemini Local HTTP Service on http://127.0.0.1:{port}")
+    logging.info(f"⚙️ 当前日志等级: {logging.getLevelName(logging.getLogger().getEffectiveLevel())} (想要看全量 JSON 请求请带上 --debug 参数)")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        print("\nShutting down server...")
+        logging.info("\n👋 Shutting down server...")
         httpd.server_close()
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "test":
+    if "test" in sys.argv:
         text = "わたし"
         print(json.dumps(analyze_text(text), ensure_ascii=False))
     else:

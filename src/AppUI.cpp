@@ -23,7 +23,11 @@ struct AsyncHttpPost {
             cli.set_connection_timeout(2, 0); // 2秒连接超时
             cli.set_read_timeout(30, 0); // 30秒读取超时 (Gemini 响应可能较慢)
             
-            json body = {{"text", text_input}};
+            // 这里我们需要确保向服务器发送真正的有效字符串长度
+            // 因为 m_inputText 后边全是 \0 空字符
+            std::string clean_text = text_input.c_str(); 
+            json body = {{"text", clean_text}};
+            
             if (auto res = cli.Post("/analyze", body.dump(), "application/json")) {
                 if (res->status == 200) {
                     result_json = res->body;
@@ -42,12 +46,15 @@ struct AsyncHttpPost {
     std::string await_resume() { return result_json; }
 };
 
-AppUI::AppUI() : m_isTyping(false) {
+AppUI::AppUI() : m_isTyping(false), m_apiStatus("等待输入...") {
     m_inputText.resize(1024 * 16, '\0'); 
-    m_outputText = "等待输入...\n";
 }
 
 void AppUI::Render() {
+    // 设置美化主题与全局排版
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.12f, 0.13f, 0.17f, 1.0f));
+    
     ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | 
                                     ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                                     ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
@@ -60,6 +67,9 @@ void AppUI::Render() {
     ImGui::SameLine();
     DrawRightPanel();
     ImGui::End();
+    
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
 
     if (m_isTyping) {
         auto now = std::chrono::steady_clock::now();
@@ -71,39 +81,145 @@ void AppUI::Render() {
 }
 
 void AppUI::DrawLeftPanel() {
-    ImGui::BeginChild("LeftPanel", ImVec2(ImGui::GetContentRegionAvail().x * 0.5f, 0), true);
-    ImGui::Text("日文输入区 (实时) - 输入停顿0.5秒后自动请求");
-    ImGui::Separator();
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.15f, 0.16f, 0.21f, 1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 8.0f);
     
-    // UI 线程加锁保护
+    ImGui::BeginChild("LeftPanel", ImVec2(ImGui::GetContentRegionAvail().x * 0.55f, 0), true, ImGuiWindowFlags_MenuBar);
+    
+    if (ImGui::BeginMenuBar()) {
+        ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "📝 日文输入区");
+        ImGui::EndMenuBar();
+    }
+    
+    ImGuiInputTextFlags input_flags = ImGuiInputTextFlags_CallbackCompletion;
+    
     {
         std::lock_guard<std::mutex> lock(m_uiMutex);
-        ImGuiInputTextFlags input_flags = ImGuiInputTextFlags_AllowTabInput;
-        // 注意：ImGui 修改的是 m_inputText.data() 的内容
+        
+        // 顶部状态栏
+        if (m_apiStatus == "分析中...") {
+            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "⏳ %s", m_apiStatus.c_str());
+        } else {
+            ImGui::TextDisabled("ℹ️ %s", m_apiStatus.c_str());
+        }
+        ImGui::Spacing();
+
+        // 核心输入框
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.10f, 0.11f, 0.15f, 1.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
+        
+        // 动态高度，留出底部空间显示补全提示
+        float input_height = ImGui::GetContentRegionAvail().y - 45.0f;
+        
         if (ImGui::InputTextMultiline("##Input", m_inputText.data(), m_inputText.capacity(), 
-                                      ImVec2(-FLT_MIN, -FLT_MIN), input_flags)) {
+                                      ImVec2(-FLT_MIN, input_height), input_flags,
+                                      [](ImGuiInputTextCallbackData* data) -> int {
+                                          AppUI* app = (AppUI*)data->UserData;
+                                          if (data->EventFlag == ImGuiInputTextFlags_CallbackCompletion) {
+                                              // 注意此时外层已经有了 m_uiMutex 锁，不需要再次加锁
+                                              if (!app->m_completion.empty()) {
+                                                  data->InsertChars(data->CursorPos, app->m_completion.c_str());
+                                                  app->m_completion.clear();
+                                                  app->m_apiStatus = "✨ 补全已应用";
+                                              }
+                                          }
+                                          return 0;
+                                      }, this)) {
             m_lastInputTime = std::chrono::steady_clock::now();
             m_isTyping = true;
+            m_completion.clear(); // 用户一打字，立刻清空旧的补全建议
+            m_apiStatus = "等待输入停顿...";
+        }
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor();
+        
+        ImGui::Spacing();
+        
+        // 底部内联补全提示 (Copilot 风格)
+        if (!m_completion.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.9f, 0.6f, 1.0f)); // 强调绿色
+            ImGui::Text("💡 按 [Tab] 键一键补全: %s", m_completion.c_str());
+            ImGui::PopStyleColor();
+        } else {
+            ImGui::TextDisabled("💡 停顿 0.5 秒自动获取补全候选");
         }
     }
     
     ImGui::EndChild();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
 }
 
 void AppUI::DrawRightPanel() {
-    ImGui::BeginChild("RightPanel", ImVec2(0, 0), true);
-    ImGui::Text("AI 预测与纠错 (Gemini 2.5 Flash)");
-    ImGui::Separator();
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.18f, 0.19f, 0.25f, 1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 8.0f);
     
-    std::string output_copy;
-    {
-        std::lock_guard<std::mutex> lock(m_uiMutex);
-        output_copy = m_outputText;
+    ImGui::BeginChild("RightPanel", ImVec2(0, 0), true, ImGuiWindowFlags_MenuBar);
+    
+    if (ImGui::BeginMenuBar()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.6f, 1.0f), "🔍 语法诊断面板");
+        ImGui::EndMenuBar();
     }
     
-    ImGui::TextWrapped("%s", output_copy.c_str());
+    std::vector<GrammarError> errors_copy;
+    std::string status_copy;
+    {
+        std::lock_guard<std::mutex> lock(m_uiMutex);
+        errors_copy = m_errors;
+        status_copy = m_apiStatus;
+    }
+    
+    ImGui::Spacing();
+    
+    if (errors_copy.empty()) {
+        if (status_copy == "分析中...") {
+            ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "正在等待 AI 专家检查...");
+        } else if (status_copy == "等待输入停顿...") {
+             ImGui::TextDisabled("...");
+        } else if (status_copy.find("错误") != std::string::npos) {
+             ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "API 调用失败，请检查服务。");
+        } else {
+             // 只有在分析完成且没有错误时才夸奖
+             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.9f, 0.4f, 1.0f));
+             ImGui::TextWrapped("🎉 完美！目前的句子没有发现明显的语法错误。");
+             ImGui::PopStyleColor();
+        }
+    } else {
+        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "⚠️ 发现了 %d 处需要注意的地方：", (int)errors_copy.size());
+        ImGui::Spacing();
+        
+        for (size_t i = 0; i < errors_copy.size(); ++i) {
+            const auto& err = errors_copy[i];
+            ImGui::PushID((int)i);
+            
+            // 为每个语法错误画一个高颜值的卡片
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.22f, 0.23f, 0.29f, 1.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 4.0f);
+            
+            // 动态高度
+            ImGui::BeginChild("ErrorCard", ImVec2(0, 110), true, ImGuiWindowFlags_NoScrollbar);
+            
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "❌ 发现错误: %s", err.wrong_text.c_str());
+            ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "✅ 修改建议: %s", err.correction.c_str());
+            ImGui::Separator();
+            
+            ImGui::PushTextWrapPos(0.0f);
+            ImGui::Text("💡 解析: %s", err.explanation.c_str());
+            ImGui::PopTextWrapPos();
+            
+            ImGui::EndChild();
+            
+            ImGui::PopStyleVar();
+            ImGui::PopStyleColor();
+            ImGui::PopID();
+            
+            ImGui::Spacing();
+        }
+    }
     
     ImGui::EndChild();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
 }
 
 void AppUI::OnInputReady() {
@@ -111,7 +227,14 @@ void AppUI::OnInputReady() {
     {
         std::lock_guard<std::mutex> lock(m_uiMutex);
         current_text = m_inputText.c_str(); 
-        m_outputText = "正在分析输入: \n" + current_text + "\n(请求API中...)";
+        m_apiStatus = "分析中...";
+    }
+    
+    // 如果没有任何真正的字符，就不请求了
+    if (current_text.empty() || current_text == "\n") {
+        std::lock_guard<std::mutex> lock(m_uiMutex);
+        m_apiStatus = "等待输入...";
+        return;
     }
     
     // 启动协程并保持其句柄，避免被提前销毁
@@ -127,39 +250,42 @@ Task<void> AppUI::FetchGemini(std::string text) {
     std::string response = co_await AsyncHttpPost{text, ""};
     
     // 2. 协程在后台网络线程恢复，解析 JSON
-    std::string formatted_output;
+    std::string new_completion;
+    std::vector<GrammarError> new_errors;
+    std::string new_status;
+    
     try {
         json res_json = json::parse(response);
         if (res_json.contains("error")) {
-            formatted_output = "[Error] " + res_json["error"].get<std::string>();
+            new_status = "[API 错误] " + res_json["error"].get<std::string>();
         } else {
-            std::string completion = res_json.value("completion", "");
-            formatted_output = "【预测补全】\n" + completion + "\n\n";
+            new_completion = res_json.value("completion", "");
             
+            // LLM 有时候返回 None 或 null
             if (res_json.contains("grammar_errors") && res_json["grammar_errors"].is_array()) {
-                formatted_output += "【语法检查】\n";
-                auto errors = res_json["grammar_errors"];
-                if (errors.empty()) {
-                    formatted_output += "-> 没有发现明显的语法错误！太棒了！\n";
-                } else {
-                    for (const auto& err : errors) {
-                        std::string wrong = err.value("wrong_text", "");
-                        std::string fix = err.value("correction", "");
-                        std::string exp = err.value("explanation", "");
-                        formatted_output += "- 错误: " + wrong + "\n";
-                        formatted_output += "  建议: " + fix + "\n";
-                        formatted_output += "  解释: " + exp + "\n\n";
-                    }
+                for (const auto& err : res_json["grammar_errors"]) {
+                    GrammarError ge;
+                    ge.wrong_text = err.value("wrong_text", "");
+                    ge.correction = err.value("correction", "");
+                    ge.explanation = err.value("explanation", "");
+                    new_errors.push_back(ge);
                 }
             }
+            new_status = "✨ 分析完成";
         }
     } catch (const std::exception& e) {
-        formatted_output = "JSON 解析失败: " + std::string(e.what()) + "\nRaw: " + response;
+        new_status = "JSON 解析失败 (可能是网络或结构问题)";
     }
     
     // 3. 多线程安全地将结果推送到 UI 变量
     {
         std::lock_guard<std::mutex> lock(m_uiMutex);
-        m_outputText = formatted_output;
+        // 如果用户在我们请求 API 期间内又修改了文本（开始了新的打字），我们不应该覆盖状态
+        // 用一个简单的弱同步：检查打字状态
+        if (!m_isTyping) {
+            m_completion = new_completion;
+            m_errors = std::move(new_errors);
+            m_apiStatus = new_status;
+        }
     }
 }

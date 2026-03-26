@@ -1,9 +1,16 @@
 #pragma once
 #include <string>
+#include <vector>
 #include <chrono>
 #include <mutex>
 #include <optional>
 #include "CoroTask.h"
+
+struct GrammarError {
+    std::string wrong_text;
+    std::string correction;
+    std::string explanation;
+};
 
 class AppUI {
 public:
@@ -24,7 +31,12 @@ private:
 
 private:
     std::string m_inputText;
-    std::string m_outputText;
+    
+    // AI 结果存储
+    std::string m_completion;
+    std::vector<GrammarError> m_errors;
+    std::string m_apiStatus; // 状态提示，如"等待输入"、"分析中..."、"API错误"等
+
     std::mutex m_uiMutex; // 保护多线程下的 UI 数据
 
     // 防抖相关的状态机变量
