@@ -121,15 +121,14 @@ void AppUI::DrawLeftPanel() {
         ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.10f, 0.11f, 0.15f, 1.0f));
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
         
-        // 动态高度，留出底部空间显示补全提示
-        float input_height = ImGui::GetContentRegionAvail().y - 45.0f;
+        // 让输入框完全占满剩余空间
+        float input_height = ImGui::GetContentRegionAvail().y;
         
         if (ImGui::InputTextMultiline("##Input", m_inputText.data(), m_inputText.capacity(), 
                                       ImVec2(-FLT_MIN, input_height), input_flags,
                                       [](ImGuiInputTextCallbackData* data) -> int {
                                           AppUI* app = (AppUI*)data->UserData;
                                           if (data->EventFlag == ImGuiInputTextFlags_CallbackCompletion) {
-                                              // 注意此时外层已经有了 m_uiMutex 锁，不需要再次加锁
                                               if (!app->m_completion.empty()) {
                                                   data->InsertChars(data->CursorPos, app->m_completion.c_str());
                                                   app->m_completion.clear();
@@ -143,18 +142,41 @@ void AppUI::DrawLeftPanel() {
             m_completion.clear(); // 用户一打字，立刻清空旧的补全建议
             m_apiStatus = "等待输入停顿...";
         }
+        
+        // 抓取输入框的矩形边界，用于在内部绘制真正的背景水印 (Copilot 样式)
+        ImVec2 input_min = ImGui::GetItemRectMin();
+        ImVec2 input_max = ImGui::GetItemRectMax();
+        
         ImGui::PopStyleVar();
         ImGui::PopStyleColor();
         
-        ImGui::Spacing();
-        
-        // 底部内联补全提示 (Copilot 风格)
+        // 在背景上绘制浅色的自动补全文字
         if (!m_completion.empty()) {
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.9f, 0.6f, 1.0f)); // 强调绿色
-            ImGui::Text("💡 按 [Tab] 键一键补全: %s", m_completion.c_str());
-            ImGui::PopStyleColor();
-        } else {
-            ImGui::TextDisabled("💡 停顿 0.5 秒自动获取补全候选");
+            ImDrawList* draw_list = ImGui::GetWindowDrawList();
+            
+            // 计算当前输入文本大概占据的高度，以便把水印画在紧接着它的下方
+            float wrap_width = (input_max.x - input_min.x) - ImGui::GetStyle().FramePadding.x * 2.0f;
+            ImGui::PushTextWrapPos(wrap_width); 
+            // 空字符串强制高度为一行
+            ImVec2 text_size = m_inputText.empty() ? ImVec2(0, ImGui::GetTextLineHeight()) : ImGui::CalcTextSize(m_inputText.c_str());
+            ImGui::PopTextWrapPos();
+
+            ImVec2 ghost_pos = ImVec2(
+                input_min.x + ImGui::GetStyle().FramePadding.x,
+                input_min.y + ImGui::GetStyle().FramePadding.y + text_size.y + 4.0f
+            );
+
+            // 如果文本超出了背景底部，则将水印固定在右下角悬浮显示
+            if (ghost_pos.y > input_max.y - ImGui::GetTextLineHeight() - 10.0f) {
+                ghost_pos.x = input_max.x - ImGui::CalcTextSize(m_completion.c_str()).x - 30.0f;
+                ghost_pos.y = input_max.y - ImGui::GetTextLineHeight() - 10.0f;
+            }
+
+            draw_list->PushClipRect(input_min, input_max, true);
+            std::string ghost_text = "💡 按 [Tab] 补全: " + m_completion;
+            // 绘制带有透明度的浅绿色内联提示 (RGBA)
+            draw_list->AddText(ghost_pos, IM_COL32(120, 255, 150, 160), ghost_text.c_str());
+            draw_list->PopClipRect();
         }
     }
     
