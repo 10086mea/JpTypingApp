@@ -26,8 +26,9 @@ public:
 private:
     void DrawLeftPanel();
     void DrawRightPanel();
-    void OnInputReady(); // 防抖触发后的核心业务函数
-    Task<void> FetchGemini(std::string text, std::shared_ptr<std::mutex> cancelMutex, std::shared_ptr<bool> isCancelled);
+    void OnInputReady(); // 防抖触发后的核心业务函数 (补全)
+    void OnGrammarCheckTriggered(); // 手动触发语法检测
+    Task<void> FetchGemini(std::string text, std::string mode, std::shared_ptr<std::mutex> cancelMutex, std::shared_ptr<bool> isCancelled);
 
 private:
     std::string m_inputText;

@@ -12,6 +12,7 @@ using json = nlohmann::json;
 // 自定义的 C++20 Awaiter，用于在后台线程发起 HTTP 请求
 struct AsyncHttpPost {
     std::string text_input;
+    std::string req_mode;
     std::shared_ptr<std::mutex> cancel_mutex;
     std::shared_ptr<bool> is_cancelled;
 
@@ -20,8 +21,8 @@ struct AsyncHttpPost {
     };
     std::shared_ptr<SharedData> data;
 
-    AsyncHttpPost(std::string text, std::shared_ptr<std::mutex> mut, std::shared_ptr<bool> flag)
-        : text_input(text), cancel_mutex(mut), is_cancelled(flag) {
+    AsyncHttpPost(std::string text, std::string mode, std::shared_ptr<std::mutex> mut, std::shared_ptr<bool> flag)
+        : text_input(text), req_mode(mode), cancel_mutex(mut), is_cancelled(flag) {
         data = std::make_shared<SharedData>();
     }
 
@@ -30,13 +31,14 @@ struct AsyncHttpPost {
     void await_suspend(std::coroutine_handle<> h) {
         // 深拷贝一份给 lambda，防止协程帧被销毁时触发 Access Violation
         std::string input_copy = text_input; 
+        std::string mode_copy = req_mode;
         
-        std::thread([input = std::move(input_copy), mut = cancel_mutex, flag = is_cancelled, d = data, h]() {
+        std::thread([input = std::move(input_copy), mode = std::move(mode_copy), mut = cancel_mutex, flag = is_cancelled, d = data, h]() {
             httplib::Client cli("127.0.0.1", 5000);
             cli.set_connection_timeout(2, 0); // 2秒连接超时
-            cli.set_read_timeout(30, 0); // 30秒读取超时
+            cli.set_read_timeout(mode == "completion" ? 10 : 30, 0); // 30秒读取超时
             
-            json body = {{"text", input.c_str()}};
+            json body = {{"text", input.c_str()}, {"mode", mode.c_str()}};
             if (auto res = cli.Post("/analyze", body.dump(), "application/json")) {
                 if (res->status == 200) {
                     d->result_json = res->body;
@@ -106,6 +108,7 @@ void AppUI::DrawLeftPanel() {
     
     ImGuiInputTextFlags input_flags = ImGuiInputTextFlags_CallbackCompletion;
     
+    bool trigger_grammar = false;
     {
         std::lock_guard<std::mutex> lock(m_uiMutex);
         
@@ -178,6 +181,21 @@ void AppUI::DrawLeftPanel() {
             draw_list->AddText(ghost_pos, IM_COL32(120, 255, 150, 160), ghost_text.c_str());
             draw_list->PopClipRect();
         }
+        
+        // 检测快捷键，但不要在这里触发，因为还在 m_uiMutex 的锁内
+        if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+            ImGui::IsKeyPressed(ImGuiKey_Enter, false) && 
+            ImGui::IsKeyDown(ImGuiMod_Ctrl)) {
+            trigger_grammar = true;
+        }
+        
+        ImGui::Spacing();
+        ImGui::TextDisabled("💡 停顿 0.5s 快速预测补全 | 按 [Ctrl + Enter] 进行全句深度语法纠错");
+    }
+    
+    // 脱离锁作用域后再触发，防止 std::mutex 二次加锁导致 abort()
+    if (trigger_grammar) {
+        OnGrammarCheckTriggered();
     }
     
     ImGui::EndChild();
@@ -316,16 +334,41 @@ void AppUI::OnInputReady() {
     m_isCancelled = std::make_shared<bool>(false);
     
     // 启动协程并保持其句柄，旧的协程将在此被安全的销毁
-    m_activeTask.emplace(FetchGemini(current_text, m_cancelMutex, m_isCancelled));
+    m_activeTask.emplace(FetchGemini(current_text, "completion", m_cancelMutex, m_isCancelled));
 }
 
-Task<void> AppUI::FetchGemini(std::string text, std::shared_ptr<std::mutex> mut, std::shared_ptr<bool> flag) {
+void AppUI::OnGrammarCheckTriggered() {
+    std::string current_text;
+    {
+        std::lock_guard<std::mutex> lock(m_uiMutex);
+        current_text = m_inputText.c_str(); 
+        m_apiStatus = "深度语法分析中...";
+    }
+    
+    // 如果没有任何真正的字符，就不请求了
+    if (current_text.empty() || current_text == "\n") {
+        return;
+    }
+    
+    // 取消之前的其他协程请求
+    if (m_cancelMutex && m_isCancelled) {
+        std::lock_guard<std::mutex> lock(*m_cancelMutex);
+        *m_isCancelled = true;
+    }
+    
+    m_cancelMutex = std::make_shared<std::mutex>();
+    m_isCancelled = std::make_shared<bool>(false);
+    
+    m_activeTask.emplace(FetchGemini(current_text, "grammar", m_cancelMutex, m_isCancelled));
+}
+
+Task<void> AppUI::FetchGemini(std::string text, std::string mode, std::shared_ptr<std::mutex> mut, std::shared_ptr<bool> flag) {
     if (text.empty()) {
         co_return;
     }
     
     // 1. 发起异步请求，当前协程挂起，不阻塞主线程
-    std::string response = co_await AsyncHttpPost{text, mut, flag};
+    std::string response = co_await AsyncHttpPost{text, mode, mut, flag};
     
     // 2. 协程在后台网络线程恢复，解析 JSON
     std::string new_completion;
@@ -337,19 +380,22 @@ Task<void> AppUI::FetchGemini(std::string text, std::shared_ptr<std::mutex> mut,
         if (res_json.contains("error")) {
             new_status = "[API 错误] " + res_json["error"].get<std::string>();
         } else {
-            new_completion = res_json.value("completion", "");
-            
-            // LLM 有时候返回 None 或 null
-            if (res_json.contains("grammar_errors") && res_json["grammar_errors"].is_array()) {
-                for (const auto& err : res_json["grammar_errors"]) {
-                    GrammarError ge;
-                    ge.wrong_text = err.value("wrong_text", "");
-                    ge.correction = err.value("correction", "");
-                    ge.explanation = err.value("explanation", "");
-                    new_errors.push_back(ge);
+            if (mode == "completion") {
+                new_completion = res_json.value("completion", "");
+                new_status = "✨ 补全预测完成";
+            } else {
+                new_completion = res_json.value("completion", "");
+                if (res_json.contains("grammar_errors") && res_json["grammar_errors"].is_array()) {
+                    for (const auto& err : res_json["grammar_errors"]) {
+                        GrammarError ge;
+                        ge.wrong_text = err.value("wrong_text", "");
+                        ge.correction = err.value("correction", "");
+                        ge.explanation = err.value("explanation", "");
+                        new_errors.push_back(ge);
+                    }
                 }
+                new_status = "✨ 语法分析完成";
             }
-            new_status = "✨ 分析完成";
         }
     } catch (const std::exception& e) {
         new_status = "JSON 解析失败 (可能是网络或结构问题)";
@@ -358,12 +404,15 @@ Task<void> AppUI::FetchGemini(std::string text, std::shared_ptr<std::mutex> mut,
     // 3. 多线程安全地将结果推送到 UI 变量
     {
         std::lock_guard<std::mutex> lock(m_uiMutex);
-        // 如果用户在我们请求 API 期间内又修改了文本（开始了新的打字），我们不应该覆盖状态
-        // 用一个简单的弱同步：检查打字状态
         if (!m_isTyping) {
-            m_completion = new_completion;
-            m_errors = std::move(new_errors);
-            m_apiStatus = new_status;
+            if (mode == "completion") {
+                m_completion = new_completion;
+                m_apiStatus = new_status;
+            } else {
+                m_completion = new_completion;
+                m_errors = std::move(new_errors);
+                m_apiStatus = new_status;
+            }
         }
     }
 }

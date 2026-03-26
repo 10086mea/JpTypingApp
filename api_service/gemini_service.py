@@ -26,15 +26,29 @@ except Exception as e:
 
 URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={API_KEY}"
 
-def analyze_text(text):
-    prompt = f"""
+def analyze_text(text, mode="completion"):
+    if mode == "completion":
+        prompt = f"""
+You are an advanced Japanese language autocomplete assistant.
+The user is typing: '{text}'
+Predict the next few characters or words (maximum 10 characters) the user is most likely to type next.
+Respond ONLY with the predicted continuation characters. No explanation, no markdown, no JSON formatting.
+If the input is empty or invalid, respond with an empty string.
+"""
+        data = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": 0.1,
+                "maxOutputTokens": 20
+            }
+        }
+    else:
+        prompt = f"""
 You are an advanced Japanese language assistant.
 The user is typing Japanese in a typing practice application.
 Their current input is: '{text}'
 
-Your tasks are:
-1. Typing completion: Predict what the user is most likely trying to type next (a few words or characters to complete the sentence or phrase). Provide just the completion part, not the whole sentence. If the input is empty or invalid, provide an empty string for completion.
-2. Grammar check: Analyze the currently input text. Find any grammatical errors, unnatural phrasing, or typos, and provide annotations. If there are no errors, return an empty list for grammar_errors.
+Analyze the currently input text. Find any grammatical errors, unnatural phrasing, or typos, and provide annotations. If there are no errors, return an empty list for grammar_errors.
 
 Respond ONLY with a valid JSON object in the exact following structure. Do not include markdown formatting like ```json.
 {{
@@ -48,14 +62,13 @@ Respond ONLY with a valid JSON object in the exact following structure. Do not i
   ]
 }}
 """
-    
-    data = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0.2,
-            "responseMimeType": "application/json"
+        data = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": 0.2,
+                "responseMimeType": "application/json"
+            }
         }
-    }
     
     req_body = json.dumps(data).encode('utf-8')
     logging.debug(f"Gemini Request Payload: {req_body.decode('utf-8')}")
@@ -67,16 +80,19 @@ Respond ONLY with a valid JSON object in the exact following structure. Do not i
         logging.debug(f"Gemini Response Body: {response_body}")
         
         result_json = json.loads(response_body)
-        content_text = result_json.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '{}')
+        content_text = result_json.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '').strip()
         
-        try:
-            return json.loads(content_text.strip())
-        except json.JSONDecodeError:
-            if content_text.startswith("```json"):
-                content_text = content_text[7:]
-            if content_text.endswith("```"):
-                content_text = content_text[:-3]
-            return json.loads(content_text.strip())
+        if mode == "completion":
+            return {"completion": content_text, "grammar_errors": []}
+        else:
+            try:
+                return json.loads(content_text)
+            except json.JSONDecodeError:
+                if content_text.startswith("```json"):
+                    content_text = content_text[7:]
+                if content_text.endswith("```"):
+                    content_text = content_text[:-3]
+                return json.loads(content_text.strip())
         
     except Exception as e:
         logging.error(f"Gemini API Error: {e}")
@@ -92,9 +108,10 @@ class RequestHandler(BaseHTTPRequestHandler):
             try:
                 request_json = json.loads(post_data.decode('utf-8'))
                 text = request_json.get('text', '')
-                logging.info(f"📝 收到打字请求文本: {repr(text)}")
+                mode = request_json.get('mode', 'completion')
+                logging.info(f"📝 收到打字请求文本: {repr(text)} [模式: {mode}]")
                 
-                result = analyze_text(text)
+                result = analyze_text(text, mode)
                 logging.info(f"✨ 返回分析结果: 补全='{result.get('completion','')}' | 发现语法错误={len(result.get('grammar_errors',[]))}处")
                 logging.debug(f"Full JSON Response: {json.dumps(result, ensure_ascii=False)}")
                 
