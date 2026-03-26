@@ -3,6 +3,8 @@ import os
 import json
 import urllib.request
 import urllib.error
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import ThreadingMixIn
 
 config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 try:
@@ -40,8 +42,8 @@ Respond ONLY with a valid JSON object in the exact following structure. Do not i
     data = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
-            "temperature": 0.2, # Keep formatting strict and deterministic
-            "responseMimeType": "application/json" # Enforce strict JSON
+            "temperature": 0.2,
+            "responseMimeType": "application/json"
         }
     }
     
@@ -52,13 +54,11 @@ Respond ONLY with a valid JSON object in the exact following structure. Do not i
         response_body = response.read().decode('utf-8')
         result_json = json.loads(response_body)
         
-        # Extract the actual text from the Gemini response structure
         content_text = result_json.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '{}')
         
         try:
             return json.loads(content_text.strip())
         except json.JSONDecodeError:
-            # Fallback parsing in case it didn't strictly follow JSON formatting
             if content_text.startswith("```json"):
                 content_text = content_text[7:]
             if content_text.endswith("```"):
@@ -68,17 +68,63 @@ Respond ONLY with a valid JSON object in the exact following structure. Do not i
     except Exception as e:
         return {"error": str(e), "completion": "", "grammar_errors": []}
 
+class RequestHandler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        if self.path == '/analyze':
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length)
+            
+            try:
+                request_json = json.loads(post_data.decode('utf-8'))
+                text = request_json.get('text', '')
+                
+                result = analyze_text(text)
+                
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(json.dumps(result, ensure_ascii=False).encode('utf-8'))
+            except ConnectionAbortedError:
+                # Client disconnected before we could send the response
+                pass
+            except Exception as e:
+                try:
+                    self.send_response(400)
+                    self.send_header('Content-Type', 'application/json; charset=utf-8')
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
+                except Exception:
+                    pass
+        else:
+            self.send_response(404)
+            self.end_headers()
+            
+    # Disable default logging to keep terminal clean
+    def log_message(self, format, *args):
+        pass
+
+class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+    def handle_error(self, request, client_address):
+        # 忽略控制台打印断连报警
+        import sys
+        exctype, value = sys.exc_info()[:2]
+        if exctype is not None and (issubclass(exctype, ConnectionAbortedError) or issubclass(exctype, ConnectionResetError)):
+            return
+        HTTPServer.handle_error(self, request, client_address)
+
+def run_server(port=5000):
+    server_address = ('127.0.0.1', port)
+    httpd = ThreadedHTTPServer(server_address, RequestHandler)
+    print(f"Starting Gemini Local HTTP Service on http://127.0.0.1:{port}")
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\nShutting down server...")
+        httpd.server_close()
+
 if __name__ == "__main__":
-    text = ""
-    # Support both command line argument and stdin
-    if len(sys.argv) > 1:
-        text = sys.argv[1]
-    
-    if not text:
-        # If no argument, try to read from stdin (timeout after waiting to prevent hang)
-        import select
-        if select.select([sys.stdin,],[],[],0.0)[0]:
-            text = sys.stdin.read().strip()
-        
-    result = analyze_text(text)
-    print(json.dumps(result, ensure_ascii=False))
+    if len(sys.argv) > 1 and sys.argv[1] == "test":
+        text = "わたし"
+        print(json.dumps(analyze_text(text), ensure_ascii=False))
+    else:
+        run_server()

@@ -1,6 +1,9 @@
 #pragma once
 #include <string>
 #include <chrono>
+#include <mutex>
+#include <optional>
+#include "CoroTask.h"
 
 class AppUI {
 public:
@@ -17,13 +20,18 @@ private:
     void DrawLeftPanel();
     void DrawRightPanel();
     void OnInputReady(); // 防抖触发后的核心业务函数
+    Task<void> FetchGemini(std::string text);
 
 private:
     std::string m_inputText;
     std::string m_outputText;
+    std::mutex m_uiMutex; // 保护多线程下的 UI 数据
 
     // 防抖相关的状态机变量
     bool m_isTyping;
     std::chrono::steady_clock::time_point m_lastInputTime;
     const std::chrono::milliseconds m_debounceDelay{500}; 
+
+    // 保存正在运行的协程任务
+    std::optional<Task<void>> m_activeTask;
 };
