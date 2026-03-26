@@ -284,12 +284,16 @@ void AppUI::DrawRightPanel() {
             ImGui::Separator();
             
             ImGui::Text("💡 解析: ");
+            ImGui::SameLine();
+            ImGui::PushID("btn_exp");
+            if (ImGui::Button("📋 复制全部解析")) {
+                ImGui::SetClipboardText(err.explanation.c_str());
+            }
+            ImGui::PopID();
             
-            // 可选中的多行文本解释说明
-            ImVec2 box_size = ImVec2(-FLT_MIN, exp_size.y + ImGui::GetStyle().FramePadding.y * 2.0f);
-            
-            ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0, 0, 0, 0));
-            ImGui::InputTextMultiline("##exp", (char*)err.explanation.c_str(), err.explanation.size() + 1, box_size, ImGuiInputTextFlags_ReadOnly);
+            // 恢复使用 TextWrapped 让长段落自动折行，防止超出屏幕无法阅读
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.8f, 0.8f, 0.8f, 1.0f));
+            ImGui::TextWrapped("%s", err.explanation.c_str());
             ImGui::PopStyleColor();
             
             ImGui::EndChild();
