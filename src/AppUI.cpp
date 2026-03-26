@@ -12,38 +12,51 @@ using json = nlohmann::json;
 // 自定义的 C++20 Awaiter，用于在后台线程发起 HTTP 请求
 struct AsyncHttpPost {
     std::string text_input;
-    std::string result_json;
+    std::shared_ptr<std::mutex> cancel_mutex;
+    std::shared_ptr<bool> is_cancelled;
+
+    struct SharedData {
+        std::string result_json;
+    };
+    std::shared_ptr<SharedData> data;
+
+    AsyncHttpPost(std::string text, std::shared_ptr<std::mutex> mut, std::shared_ptr<bool> flag)
+        : text_input(text), cancel_mutex(mut), is_cancelled(flag) {
+        data = std::make_shared<SharedData>();
+    }
 
     bool await_ready() { return false; } // 总是挂起
 
     void await_suspend(std::coroutine_handle<> h) {
-        // 在新线程中执行网络请求
-        std::thread([this, h]() {
+        // 深拷贝一份给 lambda，防止协程帧被销毁时触发 Access Violation
+        std::string input_copy = text_input; 
+        
+        std::thread([input = std::move(input_copy), mut = cancel_mutex, flag = is_cancelled, d = data, h]() {
             httplib::Client cli("127.0.0.1", 5000);
             cli.set_connection_timeout(2, 0); // 2秒连接超时
-            cli.set_read_timeout(30, 0); // 30秒读取超时 (Gemini 响应可能较慢)
+            cli.set_read_timeout(30, 0); // 30秒读取超时
             
-            // 这里我们需要确保向服务器发送真正的有效字符串长度
-            // 因为 m_inputText 后边全是 \0 空字符
-            std::string clean_text = text_input.c_str(); 
-            json body = {{"text", clean_text}};
-            
+            json body = {{"text", input.c_str()}};
             if (auto res = cli.Post("/analyze", body.dump(), "application/json")) {
                 if (res->status == 200) {
-                    result_json = res->body;
+                    d->result_json = res->body;
                 } else {
-                    result_json = "{\"error\": \"HTTP Error " + std::to_string(res->status) + "\"}";
+                    d->result_json = "{\"error\": \"HTTP Error " + std::to_string(res->status) + "\"}";
                 }
             } else {
-                result_json = "{\"error\": \"Failed to connect to Local Gemini Server (Is it running?)\"}";
+                d->result_json = "{\"error\": \"Failed to connect to Local Gemini Server\"}";
             }
             
-            // 注意：恢复协程。协程其余部分将在这个后台线程继续执行！
-            h.resume(); 
+            // 安全临界区：确保主线程在执行 m_activeTask 覆盖（进而销毁此协程）时，与此检查完全互斥
+            std::lock_guard<std::mutex> lock(*mut);
+            if (!(*flag)) {
+                // 如果未被标记放弃，才进行恢复，避免在已被释放的栈上操作内存
+                h.resume(); 
+            }
         }).detach();
     }
 
-    std::string await_resume() { return result_json; }
+    std::string await_resume() { return data->result_json; }
 };
 
 AppUI::AppUI() : m_isTyping(false), m_apiStatus("等待输入...") {
@@ -237,17 +250,28 @@ void AppUI::OnInputReady() {
         return;
     }
     
-    // 启动协程并保持其句柄，避免被提前销毁
-    m_activeTask.emplace(FetchGemini(current_text));
+    // 【协程安全】优雅地注销前一个仍在排队等待的协程模型
+    // 防止底层 thread 在回调唤醒 (h.resume) 时，遇到 use-after-free
+    if (m_cancelMutex && m_isCancelled) {
+        std::lock_guard<std::mutex> lock(*m_cancelMutex);
+        *m_isCancelled = true;
+    }
+    
+    // 创建这一个全新请求的生命周期令牌
+    m_cancelMutex = std::make_shared<std::mutex>();
+    m_isCancelled = std::make_shared<bool>(false);
+    
+    // 启动协程并保持其句柄，旧的协程将在此被安全的销毁
+    m_activeTask.emplace(FetchGemini(current_text, m_cancelMutex, m_isCancelled));
 }
 
-Task<void> AppUI::FetchGemini(std::string text) {
+Task<void> AppUI::FetchGemini(std::string text, std::shared_ptr<std::mutex> mut, std::shared_ptr<bool> flag) {
     if (text.empty()) {
         co_return;
     }
     
     // 1. 发起异步请求，当前协程挂起，不阻塞主线程
-    std::string response = co_await AsyncHttpPost{text, ""};
+    std::string response = co_await AsyncHttpPost{text, mut, flag};
     
     // 2. 协程在后台网络线程恢复，解析 JSON
     std::string new_completion;

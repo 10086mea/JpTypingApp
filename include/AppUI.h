@@ -27,7 +27,7 @@ private:
     void DrawLeftPanel();
     void DrawRightPanel();
     void OnInputReady(); // 防抖触发后的核心业务函数
-    Task<void> FetchGemini(std::string text);
+    Task<void> FetchGemini(std::string text, std::shared_ptr<std::mutex> cancelMutex, std::shared_ptr<bool> isCancelled);
 
 private:
     std::string m_inputText;
@@ -38,6 +38,10 @@ private:
     std::string m_apiStatus; // 状态提示，如"等待输入"、"分析中..."、"API错误"等
 
     std::mutex m_uiMutex; // 保护多线程下的 UI 数据
+
+    // 协程生命周期/多线程竞态安全令牌
+    std::shared_ptr<std::mutex> m_cancelMutex;
+    std::shared_ptr<bool> m_isCancelled;
 
     // 防抖相关的状态机变量
     bool m_isTyping;
