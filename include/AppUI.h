@@ -47,7 +47,7 @@ private:
     // 防抖相关的状态机变量
     bool m_isTyping;
     std::chrono::steady_clock::time_point m_lastInputTime;
-    const std::chrono::milliseconds m_debounceDelay{500}; 
+    const std::chrono::milliseconds m_debounceDelay{1000}; 
 
     // 保存正在运行的协程任务
     std::optional<Task<void>> m_activeTask;

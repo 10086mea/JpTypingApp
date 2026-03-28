@@ -7,6 +7,14 @@
 #include "httplib.h"
 #include "json.hpp"
 
+#ifdef _WIN32
+#include <windows.h>
+#include <imm.h>
+#include <GLFW/glfw3.h>
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>
+#endif
+
 using json = nlohmann::json;
 
 // 自定义的 C++20 Awaiter，用于在后台线程发起 HTTP 请求
@@ -65,6 +73,24 @@ AppUI::AppUI() : m_isTyping(false), m_apiStatus("等待输入...") {
     m_inputText.resize(1024 * 16, '\0'); 
 }
 
+#ifdef _WIN32
+static bool IsImeComposing() {
+    HWND hwnd = glfwGetWin32Window(glfwGetCurrentContext());
+    if (hwnd == NULL) return false;
+    
+    HIMC himc = ImmGetContext(hwnd);
+    if (himc == NULL) return false;
+    
+    // 获取当前拼字串的长度，如果大于0，说明用户正在预输入（选词/打罗马音）
+    LONG size = ImmGetCompositionStringW(himc, GCS_COMPSTR, NULL, 0);
+    ImmReleaseContext(hwnd, himc);
+    
+    return size > 0;
+}
+#else
+static bool IsImeComposing() { return false; }
+#endif
+
 void AppUI::Render() {
     // 设置美化主题与全局排版
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
@@ -89,8 +115,13 @@ void AppUI::Render() {
     if (m_isTyping) {
         auto now = std::chrono::steady_clock::now();
         if (std::chrono::duration_cast<std::chrono::milliseconds>(now - m_lastInputTime) >= m_debounceDelay) {
-            m_isTyping = false;
-            OnInputReady(); 
+            if (IsImeComposing()) {
+                // 如果正在拼字，重置定时器，再等一段时间，绝不触发请求
+                m_lastInputTime = now;
+            } else {
+                m_isTyping = false;
+                OnInputReady(); 
+            }
         }
     }
 }
