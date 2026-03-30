@@ -29,6 +29,7 @@ private:
     void OnInputReady(); // 防抖触发后的核心业务函数 (补全)
     void OnGrammarCheckTriggered(); // 手动触发语法检测
     Task<void> FetchGemini(std::string text, std::string mode, std::shared_ptr<std::mutex> cancelMutex, std::shared_ptr<bool> isCancelled);
+    Task<void> RecognizeSpeechAsync(std::shared_ptr<bool> isCancelled);
 
 private:
     std::string m_inputText;
@@ -46,6 +47,7 @@ private:
 
     // 防抖相关的状态机变量
     bool m_isTyping;
+    bool m_isRecording;
     std::chrono::steady_clock::time_point m_lastInputTime;
     const std::chrono::milliseconds m_debounceDelay{1000}; 
 

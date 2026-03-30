@@ -1,0 +1,10 @@
+^D:\CODE\TENCENT_PREPARE\JPTYPINGAPP\TEST_SPEECH\BUILD\CMAKEFILES\5B9E87204A573C35C23379A839289B66\GENERATE.STAMP.RULE
+setlocal
+"D:\Program Files\CMake\bin\cmake.exe" -SD:/code/Tencent_Prepare/JpTypingApp/test_speech -BD:/code/Tencent_Prepare/JpTypingApp/test_speech/build --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file D:/code/Tencent_Prepare/JpTypingApp/test_speech/build/TestSpeech.sln
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

@@ -1,0 +1,3 @@
+D:/code/Tencent_Prepare/JpTypingApp/test_speech/build/CMakeFiles/test_speech.dir
+D:/code/Tencent_Prepare/JpTypingApp/test_speech/build/CMakeFiles/ALL_BUILD.dir
+D:/code/Tencent_Prepare/JpTypingApp/test_speech/build/CMakeFiles/ZERO_CHECK.dir

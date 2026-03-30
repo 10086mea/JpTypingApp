@@ -46,7 +46,7 @@ add_executable(${PROJECT_NAME} src/main.cpp src/AppUI.cpp)
 target_include_directories(${PROJECT_NAME} PRIVATE include)
 # 将 imgui 和系统的 OpenGL::GL 一并链接给主程序
 if (WIN32)
-    target_link_libraries(${PROJECT_NAME} PRIVATE imgui OpenGL::GL ws2_32 imm32)
+    target_link_libraries(${PROJECT_NAME} PRIVATE imgui OpenGL::GL ws2_32 imm32 windowsapp)
 else()
     target_link_libraries(${PROJECT_NAME} PRIVATE imgui OpenGL::GL)
 endif()

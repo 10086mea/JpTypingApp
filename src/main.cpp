@@ -7,7 +7,9 @@
 
 #include "AppUI.h"
 #ifdef _WIN32
+#undef APIENTRY
 #include <windows.h>
+#include <winrt/base.h>
 #endif
 
 // GLFW 错误回调，遇到底层上下文崩溃时方便排查
@@ -18,6 +20,7 @@ static void glfw_error_callback(int error, const char* description) {
 int main(int, char**) {
     #ifdef _WIN32
     SetConsoleOutputCP(CP_UTF8);
+    winrt::init_apartment();
 #endif
     // 1. 初始化 GLFW
     glfwSetErrorCallback(glfw_error_callback);

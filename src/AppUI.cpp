@@ -2,6 +2,10 @@
 #include "imgui.h"
 #include <iostream>
 #include <thread>
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Media.Capture.h>
+#include <winrt/Windows.Media.SpeechRecognition.h>
+#include <winrt/Windows.Globalization.h>
 
 // Header-only libraries
 #include "httplib.h"
@@ -69,7 +73,7 @@ struct AsyncHttpPost {
     std::string await_resume() { return data->result_json; }
 };
 
-AppUI::AppUI() : m_isTyping(false), m_apiStatus("等待输入...") {
+AppUI::AppUI() : m_isTyping(false), m_isRecording(false), m_apiStatus("等待输入...") {
     m_inputText.resize(1024 * 16, '\0'); 
 }
 
@@ -135,6 +139,28 @@ void AppUI::DrawLeftPanel() {
     if (ImGui::BeginMenuBar()) {
         ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "📝 日文输入区");
         ImGui::EndMenuBar();
+    }
+    
+    ImGui::Spacing();
+    if (m_isRecording) {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.3f, 0.3f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.8f, 0.3f, 0.3f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.8f, 0.3f, 0.3f, 1.0f));
+        ImGui::Button("🔴 正在倾听录音...", ImVec2(ImGui::GetContentRegionAvail().x, 30));
+        ImGui::PopStyleColor(3);
+    } else {
+        if (ImGui::Button("🎤 语音输入 (日语)", ImVec2(ImGui::GetContentRegionAvail().x, 30))) {
+            m_isRecording = true;
+            m_apiStatus = "请求授权录音引擎...";
+            // 取消其他进行中的任务，抢占活跃协程槽
+            if (m_cancelMutex && m_isCancelled) {
+                std::lock_guard<std::mutex> lock(*m_cancelMutex);
+                *m_isCancelled = true;
+            }
+            m_cancelMutex = std::make_shared<std::mutex>();
+            m_isCancelled = std::make_shared<bool>(false);
+            m_activeTask.emplace(RecognizeSpeechAsync(m_isCancelled));
+        }
     }
     
     ImGuiInputTextFlags input_flags = ImGuiInputTextFlags_CallbackCompletion;
@@ -432,7 +458,7 @@ Task<void> AppUI::FetchGemini(std::string text, std::string mode, std::shared_pt
                 new_status = "✨ 语法分析完成";
             }
         }
-    } catch (const std::exception& e) {
+    } catch (const std::exception&) {
         new_status = "JSON 解析失败 (可能是网络或结构问题)";
     }
     
@@ -449,5 +475,70 @@ Task<void> AppUI::FetchGemini(std::string text, std::string mode, std::shared_pt
                 m_apiStatus = new_status;
             }
         }
+    }
+}
+
+Task<void> AppUI::RecognizeSpeechAsync(std::shared_ptr<bool> isCancelled) {
+    using namespace winrt::Windows::Media::SpeechRecognition;
+    using namespace winrt::Windows::Media::Capture;
+
+    std::string result_text;
+    std::string new_status;
+
+    try {
+        MediaCaptureInitializationSettings settings;
+        settings.StreamingCaptureMode(StreamingCaptureMode::Audio);
+        settings.MediaCategory(MediaCategory::Speech);
+        MediaCapture capture;
+        co_await capture.InitializeAsync(settings);
+    } catch (...) {
+        std::lock_guard<std::mutex> lock(m_uiMutex);
+        m_apiStatus = "录音失败：未授权麦克风或设备不可用";
+        m_isRecording = false;
+        co_return;
+    }
+
+    try {
+        winrt::Windows::Globalization::Language lang{ L"ja-JP" };
+        SpeechRecognizer recognizer(lang);
+
+        {
+            std::lock_guard<std::mutex> lock(m_uiMutex);
+            m_apiStatus = "🎤 引擎就绪，请在使用麦克风说话...";
+        }
+
+        co_await recognizer.CompileConstraintsAsync();
+        SpeechRecognitionResult result = co_await recognizer.RecognizeAsync();
+
+        if (result.Status() == SpeechRecognitionResultStatus::Success) {
+            result_text = winrt::to_string(result.Text());
+            new_status = "录音转写完成";
+        } else {
+            new_status = "未识别到有效的语音输入";
+        }
+
+    } catch (winrt::hresult_error const& ex) {
+        new_status = "录音出现异常: " + winrt::to_string(ex.message());
+    }
+
+    // 更新 UI 安全临界区
+    {
+        std::lock_guard<std::mutex> lock(m_uiMutex);
+        if (*isCancelled) {
+            co_return; // 已被取消，安全退场
+        }
+
+        if (!result_text.empty()) {
+            size_t old_cap = m_inputText.capacity();
+            // 去除原有的所有空字符结尾
+            m_inputText.erase(std::find(m_inputText.begin(), m_inputText.end(), '\0'), m_inputText.end());
+            // 追加日文内容
+            m_inputText += result_text;
+            // 重新填补空字符到原来的固定容量大小，防止缓冲区缩小引发 ImGui 异常
+            size_t target_size = std::max(m_inputText.size() + 1024, old_cap);
+            m_inputText.resize(target_size, '\0');
+        }
+        m_apiStatus = new_status;
+        m_isRecording = false;
     }
 }
