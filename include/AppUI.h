@@ -51,6 +51,11 @@ private:
     std::chrono::steady_clock::time_point m_lastInputTime;
     const std::chrono::milliseconds m_debounceDelay{1000}; 
 
-    // 保存正在运行的协程任务
+    // 保存正在运行的协程任务（专注 Gemini 文本大模型）
     std::optional<Task<void>> m_activeTask;
+    
+    // 独立维护语音识别框架，使其与文本补全共存不再冲突打断
+    std::optional<Task<void>> m_speechTask;
+    std::shared_ptr<std::mutex> m_speechCancelMutex;
+    std::shared_ptr<bool> m_speechCancelled;
 };

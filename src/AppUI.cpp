@@ -92,7 +92,7 @@ static bool IsImeComposing() {
     return size > 0;
 }
 #else
-static bool IsImeComposing() { return false; }
+static bool IsImeComposing() { return false; }// 获取预输入状态
 #endif
 
 void AppUI::Render() {
@@ -124,7 +124,7 @@ void AppUI::Render() {
                 m_lastInputTime = now;
             } else {
                 m_isTyping = false;
-                OnInputReady(); 
+                OnInputReady();
             }
         }
     }
@@ -152,14 +152,16 @@ void AppUI::DrawLeftPanel() {
         if (ImGui::Button("语音输入 (日语)", ImVec2(ImGui::GetContentRegionAvail().x, 30))) {
             m_isRecording = true;
             m_apiStatus = "请求授权录音引擎...";
-            // 取消其他进行中的任务，抢占活跃协程槽
-            if (m_cancelMutex && m_isCancelled) {
-                std::lock_guard<std::mutex> lock(*m_cancelMutex);
-                *m_isCancelled = true;
+            
+            // 独立处理自己的语音独木桥，不再去干扰 m_activeTask 和 m_isCancelled（补全/纠错功能）
+            if (m_speechCancelMutex && m_speechCancelled) {
+                std::lock_guard<std::mutex> lock(*m_speechCancelMutex);
+                *m_speechCancelled = true;
             }
-            m_cancelMutex = std::make_shared<std::mutex>();
-            m_isCancelled = std::make_shared<bool>(false);
-            m_activeTask.emplace(RecognizeSpeechAsync(m_isCancelled));
+            m_speechCancelMutex = std::make_shared<std::mutex>();
+            m_speechCancelled = std::make_shared<bool>(false);
+            
+            m_speechTask.emplace(RecognizeSpeechAsync(m_speechCancelled));
         }
     }
     
@@ -247,7 +249,7 @@ void AppUI::DrawLeftPanel() {
         }
         
         ImGui::Spacing();
-        ImGui::TextDisabled("停顿 0.5s 快速预测补全 | 按 [Ctrl + Enter] 进行全句深度语法纠错");
+        ImGui::TextDisabled("停顿 1s 快速预测补全 | 按 [Ctrl + Enter] 进行全句深度语法纠错");
     }
     
     // 脱离锁作用域后再触发，防止 std::mutex 二次加锁导致 abort()
@@ -283,7 +285,7 @@ void AppUI::DrawRightPanel() {
     
     if (errors_copy.empty()) {
         if (status_copy == "分析中...") {
-            ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "正在等待 AI 专家检查...");
+            ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "正在等待LLM检查...");
         } else if (status_copy == "等待输入停顿...") {
              ImGui::TextDisabled("...");
         } else if (status_copy.find("错误") != std::string::npos) {
