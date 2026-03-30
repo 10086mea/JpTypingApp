@@ -137,7 +137,7 @@ void AppUI::DrawLeftPanel() {
     ImGui::BeginChild("LeftPanel", ImVec2(ImGui::GetContentRegionAvail().x * 0.55f, 0), true, ImGuiWindowFlags_MenuBar);
     
     if (ImGui::BeginMenuBar()) {
-        ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "📝 日文输入区");
+        ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "日文输入区");
         ImGui::EndMenuBar();
     }
     
@@ -146,10 +146,10 @@ void AppUI::DrawLeftPanel() {
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.3f, 0.3f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.8f, 0.3f, 0.3f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.8f, 0.3f, 0.3f, 1.0f));
-        ImGui::Button("🔴 正在倾听录音...", ImVec2(ImGui::GetContentRegionAvail().x, 30));
+        ImGui::Button("正在倾听录音...", ImVec2(ImGui::GetContentRegionAvail().x, 30));
         ImGui::PopStyleColor(3);
     } else {
-        if (ImGui::Button("🎤 语音输入 (日语)", ImVec2(ImGui::GetContentRegionAvail().x, 30))) {
+        if (ImGui::Button("语音输入 (日语)", ImVec2(ImGui::GetContentRegionAvail().x, 30))) {
             m_isRecording = true;
             m_apiStatus = "请求授权录音引擎...";
             // 取消其他进行中的任务，抢占活跃协程槽
@@ -171,9 +171,9 @@ void AppUI::DrawLeftPanel() {
         
         // 顶部状态栏
         if (m_apiStatus == "分析中...") {
-            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "⏳ %s", m_apiStatus.c_str());
+            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "%s", m_apiStatus.c_str());
         } else {
-            ImGui::TextDisabled("ℹ️ %s", m_apiStatus.c_str());
+            ImGui::TextDisabled("%s", m_apiStatus.c_str());
         }
         ImGui::Spacing();
 
@@ -192,7 +192,7 @@ void AppUI::DrawLeftPanel() {
                                               if (!app->m_completion.empty()) {
                                                   data->InsertChars(data->CursorPos, app->m_completion.c_str());
                                                   app->m_completion.clear();
-                                                  app->m_apiStatus = "✨ 补全已应用";
+                                                  app->m_apiStatus = "补全已应用";
                                               }
                                           }
                                           return 0;
@@ -233,7 +233,7 @@ void AppUI::DrawLeftPanel() {
             }
 
             draw_list->PushClipRect(input_min, input_max, true);
-            std::string ghost_text = "💡 按 [Tab] 补全: " + m_completion;
+            std::string ghost_text = "按 [Tab] 补全: " + m_completion;
             // 绘制带有透明度的浅绿色内联提示 (RGBA)
             draw_list->AddText(ghost_pos, IM_COL32(120, 255, 150, 160), ghost_text.c_str());
             draw_list->PopClipRect();
@@ -247,7 +247,7 @@ void AppUI::DrawLeftPanel() {
         }
         
         ImGui::Spacing();
-        ImGui::TextDisabled("💡 停顿 0.5s 快速预测补全 | 按 [Ctrl + Enter] 进行全句深度语法纠错");
+        ImGui::TextDisabled("停顿 0.5s 快速预测补全 | 按 [Ctrl + Enter] 进行全句深度语法纠错");
     }
     
     // 脱离锁作用域后再触发，防止 std::mutex 二次加锁导致 abort()
@@ -267,7 +267,7 @@ void AppUI::DrawRightPanel() {
     ImGui::BeginChild("RightPanel", ImVec2(0, 0), true, ImGuiWindowFlags_MenuBar);
     
     if (ImGui::BeginMenuBar()) {
-        ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.6f, 1.0f), "🔍 语法诊断面板");
+        ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.6f, 1.0f), "语法诊断面板");
         ImGui::EndMenuBar();
     }
     
@@ -291,11 +291,11 @@ void AppUI::DrawRightPanel() {
         } else {
              // 只有在分析完成且没有错误时才夸奖
              ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.9f, 0.4f, 1.0f));
-             ImGui::TextWrapped("🎉 完美！目前的句子没有发现明显的语法错误。");
+             ImGui::TextWrapped("完美！目前的句子没有发现明显的语法错误。");
              ImGui::PopStyleColor();
         }
     } else {
-        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "⚠️ 发现了 %d 处需要注意的地方：", (int)errors_copy.size());
+        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "发现了 %d 处需要注意的地方：", (int)errors_copy.size());
         ImGui::Spacing();
         
         for (size_t i = 0; i < errors_copy.size(); ++i) {
@@ -313,7 +313,7 @@ void AppUI::DrawRightPanel() {
             
             ImGui::BeginChild("ErrorCard", ImVec2(0, card_height), true, ImGuiWindowFlags_NoScrollbar);
             
-            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "❌ 发现错误: ");
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "发现错误: ");
             ImGui::SameLine();
             ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0, 0, 0, 0));
             ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
@@ -322,7 +322,7 @@ void AppUI::DrawRightPanel() {
             ImGui::PopStyleColor(2);
             
             // 可选中且带快捷复制的修改建议
-            ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "✅ 修改建议: ");
+            ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "修改建议: ");
             ImGui::SameLine();
             
             float avail_w = ImGui::GetContentRegionAvail().x;
@@ -334,16 +334,16 @@ void AppUI::DrawRightPanel() {
             ImGui::PopStyleColor(2);
             
             ImGui::SameLine();
-            if (ImGui::Button("📋 复制")) {
+            if (ImGui::Button("复制")) {
                 ImGui::SetClipboardText(err.correction.c_str());
             }
             
             ImGui::Separator();
             
-            ImGui::Text("💡 解析: ");
+            ImGui::Text("解析: ");
             ImGui::SameLine();
             ImGui::PushID("btn_exp");
-            if (ImGui::Button("📋 复制全部解析")) {
+            if (ImGui::Button("复制全部解析")) {
                 ImGui::SetClipboardText(err.explanation.c_str());
             }
             ImGui::PopID();
@@ -443,7 +443,7 @@ Task<void> AppUI::FetchGemini(std::string text, std::string mode, std::shared_pt
         } else {
             if (mode == "completion") {
                 new_completion = res_json.value("completion", "");
-                new_status = "✨ 补全预测完成";
+                new_status = "补全预测完成";
             } else {
                 new_completion = res_json.value("completion", "");
                 if (res_json.contains("grammar_errors") && res_json["grammar_errors"].is_array()) {
@@ -455,7 +455,7 @@ Task<void> AppUI::FetchGemini(std::string text, std::string mode, std::shared_pt
                         new_errors.push_back(ge);
                     }
                 }
-                new_status = "✨ 语法分析完成";
+                new_status = "语法分析完成";
             }
         }
     } catch (const std::exception&) {
@@ -504,7 +504,7 @@ Task<void> AppUI::RecognizeSpeechAsync(std::shared_ptr<bool> isCancelled) {
 
         {
             std::lock_guard<std::mutex> lock(m_uiMutex);
-            m_apiStatus = "🎤 引擎就绪，请在使用麦克风说话...";
+            m_apiStatus = "引擎就绪，请在使用麦克风说话...";
         }
 
         co_await recognizer.CompileConstraintsAsync();
