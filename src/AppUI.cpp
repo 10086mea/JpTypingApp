@@ -13,6 +13,7 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <mmsystem.h>
 #include <imm.h>
 #include <GLFW/glfw3.h>
 #define GLFW_EXPOSE_NATIVE_WIN32
@@ -73,8 +74,58 @@ struct AsyncHttpPost {
     std::string await_resume() { return data->result_json; }
 };
 
+// 自定义的 C++20 Awaiter，用于在后台线程发起 HTTP 聊天和 TTS 请求
+struct AsyncHttpChatAndTTS {
+    std::string text_input;
+    std::string system_prompt;
+    std::shared_ptr<std::mutex> cancel_mutex;
+    std::shared_ptr<bool> is_cancelled;
+
+    struct SharedData {
+        std::string result_json;
+    };
+    std::shared_ptr<SharedData> data;
+
+    AsyncHttpChatAndTTS(std::string text, std::string prompt, std::shared_ptr<std::mutex> mut, std::shared_ptr<bool> flag)
+        : text_input(text), system_prompt(prompt), cancel_mutex(mut), is_cancelled(flag) {
+        data = std::make_shared<SharedData>();
+    }
+
+    bool await_ready() { return false; }
+
+    void await_suspend(std::coroutine_handle<> h) {
+        std::string input_copy = text_input; 
+        std::string prompt_copy = system_prompt;
+        
+        std::thread([input = std::move(input_copy), prompt = std::move(prompt_copy), mut = cancel_mutex, flag = is_cancelled, d = data, h]() {
+            httplib::Client cli("127.0.0.1", 5000);
+            cli.set_connection_timeout(2, 0); 
+            cli.set_read_timeout(60, 0); // 聊天+TTS比较慢，60秒超时
+            
+            json body = {{"text", input.c_str()}, {"system_prompt", prompt.c_str()}};
+            if (auto res = cli.Post("/chat", body.dump(), "application/json")) {
+                if (res->status == 200) {
+                    d->result_json = res->body;
+                } else {
+                    d->result_json = "{\"error\": \"HTTP Error " + std::to_string(res->status) + "\"}";
+                }
+            } else {
+                d->result_json = "{\"error\": \"Failed to connect\"}";
+            }
+            
+            std::lock_guard<std::mutex> lock(*mut);
+            if (!(*flag)) {
+                h.resume(); 
+            }
+        }).detach();
+    }
+
+    std::string await_resume() { return data->result_json; }
+};
+
 AppUI::AppUI() : m_isTyping(false), m_isRecording(false), m_apiStatus("等待输入...") {
     m_inputText.resize(1024 * 16, '\0'); 
+    m_chatInputText.resize(1024 * 16, '\0');
 }
 
 #ifdef _WIN32
@@ -108,9 +159,33 @@ void AppUI::Render() {
     ImGui::SetNextWindowSize(viewport->WorkSize);
 
     ImGui::Begin("MainWorkspace", nullptr, window_flags);
-    DrawLeftPanel();
-    ImGui::SameLine();
-    DrawRightPanel();
+    
+    // 全局设置与模式切换区
+    if (ImGui::CollapsingHeader("设置选项 (Settings)")) {
+        int mode = (int)m_currentMode;
+        if (ImGui::RadioButton("沉浸打字模式", &mode, 0)) m_currentMode = AppMode::Typing;
+        ImGui::SameLine();
+        if (ImGui::RadioButton("二次元聊天模式", &mode, 1)) m_currentMode = AppMode::Chat;
+        
+        ImGui::SliderInt("防抖延迟 (ms)", &m_debounceDelayMs, 100, 3000);
+        
+        char sys_prompt_buf[1024];
+        strncpy(sys_prompt_buf, m_systemPrompt.c_str(), sizeof(sys_prompt_buf) - 1);
+        sys_prompt_buf[sizeof(sys_prompt_buf)-1] = '\0';
+        if (ImGui::InputTextMultiline("AI 美少女设定", sys_prompt_buf, sizeof(sys_prompt_buf), ImVec2(0, 80))) {
+            m_systemPrompt = sys_prompt_buf;
+        }
+    }
+    
+    ImGui::Separator();
+    
+    if (m_currentMode == AppMode::Typing) {
+        DrawLeftPanel();
+        ImGui::SameLine();
+        DrawRightPanel();
+    } else {
+        DrawChatUI();
+    }
     ImGui::End();
     
     ImGui::PopStyleColor();
@@ -118,7 +193,7 @@ void AppUI::Render() {
 
     if (m_isTyping) {
         auto now = std::chrono::steady_clock::now();
-        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - m_lastInputTime) >= m_debounceDelay) {
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - m_lastInputTime) >= std::chrono::milliseconds(m_debounceDelayMs)) {
             if (IsImeComposing()) {
                 // 如果正在拼字，重置定时器，再等一段时间，绝不触发请求
                 m_lastInputTime = now;
@@ -531,16 +606,161 @@ Task<void> AppUI::RecognizeSpeechAsync(std::shared_ptr<bool> isCancelled) {
         }
 
         if (!result_text.empty()) {
-            size_t old_cap = m_inputText.capacity();
-            // 去除原有的所有空字符结尾
-            m_inputText.erase(std::find(m_inputText.begin(), m_inputText.end(), '\0'), m_inputText.end());
-            // 追加日文内容
-            m_inputText += result_text;
-            // 重新填补空字符到原来的固定容量大小，防止缓冲区缩小引发 ImGui 异常
-            size_t target_size = std::max(m_inputText.size() + 1024, old_cap);
-            m_inputText.resize(target_size, '\0');
+            if (m_currentMode == AppMode::Typing) {
+                size_t old_cap = m_inputText.capacity();
+                m_inputText.erase(std::find(m_inputText.begin(), m_inputText.end(), '\0'), m_inputText.end());
+                m_inputText += result_text;
+                size_t target_size = std::max(m_inputText.size() + 1024, old_cap);
+                m_inputText.resize(target_size, '\0');
+            } else {
+                size_t old_cap = m_chatInputText.capacity();
+                m_chatInputText.erase(std::find(m_chatInputText.begin(), m_chatInputText.end(), '\0'), m_chatInputText.end());
+                m_chatInputText += result_text;
+                size_t target_size = std::max(m_chatInputText.size() + 1024, old_cap);
+                m_chatInputText.resize(target_size, '\0');
+            }
         }
         m_apiStatus = new_status;
         m_isRecording = false;
     }
+}
+
+Task<void> AppUI::FetchChatAndTTS(std::string text, std::string system_prompt, std::shared_ptr<std::mutex> cancelMutex, std::shared_ptr<bool> isCancelled) {
+    if (text.empty()) co_return;
+    
+    // 触发后台文字生成与 TTS 请求合并操作
+    std::string result = co_await AsyncHttpChatAndTTS(text, system_prompt, cancelMutex, isCancelled);
+
+    std::lock_guard<std::mutex> lock(m_uiMutex);
+    // 判断自身是否被作废
+    if (*isCancelled) {
+        co_return; // 已被取消，安全退场
+    }
+
+    try {
+        auto res_json = json::parse(result);
+        if (res_json.contains("error")) {
+            m_apiStatus = std::string("聊天失败: ") + res_json["error"].get<std::string>();
+        } else {
+            std::string reply = res_json.value("reply", "");
+            std::string audio_file = res_json.value("audio_file", "");
+            
+            if (!reply.empty()) {
+                m_chatHistory.push_back({"ai", reply});
+            }
+            
+            if (!audio_file.empty()) {
+#ifdef _WIN32
+                // 异步播放生成的 TTS 语音
+                PlaySoundA(audio_file.c_str(), NULL, SND_FILENAME | SND_ASYNC);
+#endif
+            }
+            m_apiStatus = "回复并播放完成";
+        }
+    } catch (...) {
+        m_apiStatus = "JSON 解析失败";
+    }
+}
+
+void AppUI::DrawChatUI() {
+    float width = ImGui::GetContentRegionAvail().x;
+    float height = ImGui::GetContentRegionAvail().y;
+
+    // 聊天记录列表 (占用 70% 高度)
+    ImGui::BeginChild("ChatHistory", ImVec2(width, height * 0.7f), true, ImGuiWindowFlags_AlwaysVerticalScrollbar);
+    for (const auto& msg : m_chatHistory) {
+        if (msg.role == "user") {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 1.0f, 1.0f));
+            ImGui::Text("你:");
+        } else {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.6f, 0.8f, 1.0f));
+            ImGui::Text("美少女:");
+        }
+        ImGui::PopStyleColor();
+        
+        ImGui::TextWrapped("%s", msg.text.c_str());
+        ImGui::Separator();
+    }
+    // 自动滚动到底部
+    if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
+        ImGui::SetScrollHereY(1.0f);
+    }
+    ImGui::EndChild();
+    
+    // 中间显示最新的一条语法检测结果 (占用 10% 高度)
+    ImGui::BeginChild("GrammarResult", ImVec2(width, height * 0.1f), true);
+    if (!m_errors.empty()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "[发现语法错误] %s", m_errors[0].wrong_text.c_str());
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "=> %s", m_errors[0].correction.c_str());
+        ImGui::TextWrapped("解析: %s", m_errors[0].explanation.c_str());
+    } else {
+        if (m_apiStatus == "分析中..." || m_apiStatus.find("录音") != std::string::npos) {
+             ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "%s", m_apiStatus.c_str());
+        } else {
+             ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "目前句子的语法没问题哦！ 当前状态: %s", m_apiStatus.c_str());
+        }
+    }
+    ImGui::EndChild();
+
+    // 底部输入区 (占用剩下 20%)
+    ImGui::BeginChild("ChatInput", ImVec2(width, 0), true);
+    
+    // 语音输入按钮
+    if (m_isRecording) {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.3f, 0.3f, 1.0f));
+        ImGui::Button("正在倾听... (系统将自动结束录制)", ImVec2(width, 30));
+        ImGui::PopStyleColor();
+    } else {
+        if (ImGui::Button("点击麦克风说话", ImVec2(width - 150, 30))) {
+            m_isRecording = true;
+            m_apiStatus = "请求授权录音引擎...";
+            // 独立处理语音
+            if (m_speechCancelMutex && m_speechCancelled) {
+                std::lock_guard<std::mutex> lock(*m_speechCancelMutex);
+                *m_speechCancelled = true;
+            }
+            m_speechCancelMutex = std::make_shared<std::mutex>();
+            m_speechCancelled = std::make_shared<bool>(false);
+            m_speechTask.emplace(RecognizeSpeechAsync(m_speechCancelled));
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("发送", ImVec2(140, 30))) {
+            std::string text = m_chatInputText.c_str();
+            text.erase(std::find(text.begin(), text.end(), '\0'), text.end());
+            
+            if (!text.empty()) {
+                m_chatHistory.push_back({"user", text});
+                
+                // 清空输入框并重置大小
+                std::fill(m_chatInputText.begin(), m_chatInputText.end(), '\0');
+                m_errors.clear();
+                m_apiStatus = "分析中...";
+                
+                // 语法纠错请求
+                if (m_cancelMutex && m_isCancelled) {
+                    std::lock_guard<std::mutex> lock(*m_cancelMutex);
+                    *m_isCancelled = true;
+                }
+                m_cancelMutex = std::make_shared<std::mutex>();
+                m_isCancelled = std::make_shared<bool>(false);
+                m_activeTask.emplace(FetchGemini(text, "grammar", m_cancelMutex, m_isCancelled));
+                
+                // TTS 对话请求
+                if (m_chatCancelMutex && m_chatCancelled) {
+                    std::lock_guard<std::mutex> lock(*m_chatCancelMutex);
+                    *m_chatCancelled = true;
+                }
+                m_chatCancelMutex = std::make_shared<std::mutex>();
+                m_chatCancelled = std::make_shared<bool>(false);
+                m_chatTask.emplace(FetchChatAndTTS(text, m_systemPrompt, m_chatCancelMutex, m_chatCancelled));
+            }
+        }
+    }
+    
+    // 输入框
+    ImGuiInputTextFlags flags = ImGuiInputTextFlags_CtrlEnterForNewLine;
+    ImGui::InputTextMultiline("##ChatInputMsg", (char*)m_chatInputText.data(), m_chatInputText.capacity(), ImVec2(width, -1), flags);
+
+    ImGui::EndChild();
 }

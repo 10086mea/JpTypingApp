@@ -26,10 +26,13 @@ public:
 private:
     void DrawLeftPanel();
     void DrawRightPanel();
+    void DrawChatUI();
+
     void OnInputReady(); // 防抖触发后的核心业务函数 (补全)
     void OnGrammarCheckTriggered(); // 手动触发语法检测
     Task<void> FetchGemini(std::string text, std::string mode, std::shared_ptr<std::mutex> cancelMutex, std::shared_ptr<bool> isCancelled);
     Task<void> RecognizeSpeechAsync(std::shared_ptr<bool> isCancelled);
+    Task<void> FetchChatAndTTS(std::string text, std::string system_prompt, std::shared_ptr<std::mutex> cancelMutex, std::shared_ptr<bool> isCancelled);
 
 private:
     std::string m_inputText;
@@ -49,7 +52,7 @@ private:
     bool m_isTyping;
     bool m_isRecording;
     std::chrono::steady_clock::time_point m_lastInputTime;
-    const std::chrono::milliseconds m_debounceDelay{1000}; 
+    int m_debounceDelayMs{1000}; 
 
     // 保存正在运行的协程任务（专注 Gemini 文本大模型）
     std::optional<Task<void>> m_activeTask;
@@ -58,4 +61,20 @@ private:
     std::optional<Task<void>> m_speechTask;
     std::shared_ptr<std::mutex> m_speechCancelMutex;
     std::shared_ptr<bool> m_speechCancelled;
+
+    // Chat UI variables
+    enum class AppMode { Typing, Chat };
+    AppMode m_currentMode = AppMode::Typing;
+
+    struct ChatMessage {
+        std::string role;
+        std::string text;
+    };
+    std::vector<ChatMessage> m_chatHistory;
+    std::string m_systemPrompt = "你是一个热爱二次元的活泼日本女高中生，你把我当做崇拜的前辈，在回复时语气元气满满，并且常用「〜だよね」「〜かな」等语气词结尾。请保持回复简短自然。";
+    std::string m_chatInputText;
+    
+    std::optional<Task<void>> m_chatTask;
+    std::shared_ptr<std::mutex> m_chatCancelMutex;
+    std::shared_ptr<bool> m_chatCancelled;
 };
