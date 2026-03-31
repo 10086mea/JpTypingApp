@@ -52,6 +52,7 @@ private:
     // 防抖相关的状态机变量
     bool m_isTyping;
     bool m_isRecording;
+    bool m_isEngineReady{false};
     std::chrono::steady_clock::time_point m_lastInputTime;
     int m_debounceDelayMs{1000}; 
 

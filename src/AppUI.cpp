@@ -220,21 +220,30 @@ void AppUI::DrawLeftPanel() {
     
     ImGui::Spacing();
     if (m_isRecording) {
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.3f, 0.3f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.8f, 0.3f, 0.3f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.8f, 0.3f, 0.3f, 1.0f));
-        if (ImGui::Button("正在倾听... [再次点击停顿转写]", ImVec2(ImGui::GetContentRegionAvail().x, 30))) {
-            if (m_speechRecognizer.has_value()) {
-                try {
-                    auto recognizer = std::any_cast<winrt::Windows::Media::SpeechRecognition::SpeechRecognizer>(m_speechRecognizer);
-                    recognizer.ContinuousRecognitionSession().StopAsync();
-                } catch(...) {}
+        if (!m_isEngineReady) {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.6f, 0.0f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.8f, 0.6f, 0.0f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.8f, 0.6f, 0.0f, 1.0f));
+            ImGui::Button("正在启动引擎，请稍候...", ImVec2(ImGui::GetContentRegionAvail().x, 30));
+            ImGui::PopStyleColor(3);
+        } else {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.3f, 0.3f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.8f, 0.3f, 0.3f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.8f, 0.3f, 0.3f, 1.0f));
+            if (ImGui::Button("正在倾听... [再次点击停顿转写]", ImVec2(ImGui::GetContentRegionAvail().x, 30))) {
+                if (m_speechRecognizer.has_value()) {
+                    try {
+                        auto recognizer = std::any_cast<winrt::Windows::Media::SpeechRecognition::SpeechRecognizer>(m_speechRecognizer);
+                        recognizer.ContinuousRecognitionSession().StopAsync();
+                    } catch(...) {}
+                }
             }
+            ImGui::PopStyleColor(3);
         }
-        ImGui::PopStyleColor(3);
     } else {
         if (ImGui::Button("语音输入 (日语)", ImVec2(ImGui::GetContentRegionAvail().x, 30))) {
             m_isRecording = true;
+            m_isEngineReady = false;
             m_apiStatus = "请求授权录音引擎...";
             
             // 独立处理自己的语音独木桥，不再去干扰 m_activeTask 和 m_isCancelled（补全/纠错功能）
@@ -657,6 +666,12 @@ Task<void> AppUI::RecognizeSpeechAsync(std::shared_ptr<bool> isCancelled) {
         co_await recognizer.CompileConstraintsAsync();
         co_await session.StartAsync();
 
+        {
+            std::lock_guard<std::mutex> lock(m_uiMutex);
+            m_isEngineReady = true;
+            m_apiStatus = "引擎已启动，您可以开始说话了！";
+        }
+
         // 阻断此后台执行线程直到上面 Completed 事件发生。协程就此完美悬停。
         WaitForSingleObject(hEvent, INFINITE);
 
@@ -682,6 +697,7 @@ Task<void> AppUI::RecognizeSpeechAsync(std::shared_ptr<bool> isCancelled) {
             m_apiStatus = new_status;
             m_isRecording = false;
         }
+        m_isEngineReady = false;
     }
 }
 
@@ -781,19 +797,26 @@ void AppUI::DrawChatUI() {
     
     // 语音输入按钮
     if (m_isRecording) {
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.3f, 0.3f, 1.0f));
-        if (ImGui::Button("正在倾听... [再次点击中止监听并转写]", ImVec2(width, 30))) {
-            if (m_speechRecognizer.has_value()) {
-                try {
-                    auto recognizer = std::any_cast<winrt::Windows::Media::SpeechRecognition::SpeechRecognizer>(m_speechRecognizer);
-                    recognizer.ContinuousRecognitionSession().StopAsync();
-                } catch(...) {}
+        if (!m_isEngineReady) {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.6f, 0.0f, 1.0f));
+            ImGui::Button("正在启动引擎，请稍候...", ImVec2(width, 30));
+            ImGui::PopStyleColor();
+        } else {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.3f, 0.3f, 1.0f));
+            if (ImGui::Button("正在倾听... [再次点击中止监听并转写]", ImVec2(width, 30))) {
+                if (m_speechRecognizer.has_value()) {
+                    try {
+                        auto recognizer = std::any_cast<winrt::Windows::Media::SpeechRecognition::SpeechRecognizer>(m_speechRecognizer);
+                        recognizer.ContinuousRecognitionSession().StopAsync();
+                    } catch(...) {}
+                }
             }
+            ImGui::PopStyleColor();
         }
-        ImGui::PopStyleColor();
     } else {
         if (ImGui::Button("点击麦克风说话", ImVec2(width - 150, 30))) {
             m_isRecording = true;
+            m_isEngineReady = false;
             m_apiStatus = "请求授权录音引擎...";
             // 独立处理语音
             if (m_speechCancelMutex && m_speechCancelled) {
