@@ -4,3 +4,5 @@ api_service/config.json
 /WhisperEngine
 协程源码学习注释版.cpp
 学习文档-C++20协程速成.md
+api_service/audio_cache/
+*.wav

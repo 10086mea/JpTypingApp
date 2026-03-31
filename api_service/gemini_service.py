@@ -5,6 +5,7 @@ import urllib.request
 import urllib.error
 import logging
 import struct
+import uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 
@@ -168,7 +169,10 @@ def chat_and_tts(text, system_prompt):
         return {"reply": f"对话生成失败: {e}", "audio_file": ""}
         
     # 2. Generate TTS for the replied text
-    temp_wav_path = os.path.join(os.getcwd(), "temp_reply.wav")
+    cache_dir = os.path.join(os.getcwd(), "audio_cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    filename = f"reply_{uuid.uuid4().hex[:8]}.wav"
+    temp_wav_path = os.path.join(cache_dir, filename)
     try:
         # User defined snippet config
         contents = [

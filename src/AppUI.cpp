@@ -675,7 +675,7 @@ Task<void> AppUI::FetchChatAndTTS(std::string text, std::string system_prompt, s
             std::string audio_file = res_json.value("audio_file", "");
             
             if (!reply.empty()) {
-                m_chatHistory.push_back({"ai", reply});
+                m_chatHistory.push_back({"ai", reply, audio_file});
             }
             
             if (!audio_file.empty()) {
@@ -701,13 +701,26 @@ void AppUI::DrawChatUI() {
         if (msg.role == "user") {
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 1.0f, 1.0f));
             ImGui::Text("你:");
+            ImGui::PopStyleColor();
         } else {
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.6f, 0.8f, 1.0f));
             ImGui::Text("美少女:");
+            ImGui::PopStyleColor();
+            
+            // 渲染语音重播按钮 (靠右对齐)
+            if (!msg.audioPath.empty()) {
+                ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - 30.0f);
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.7f, 0.3f, 1.0f));
+                std::string btnLabel = "▶##" + std::to_string(&msg - &m_chatHistory[0]);
+                if (ImGui::Button(btnLabel.c_str(), ImVec2(30, 20))) {
+                    PlaySoundA(msg.audioPath.c_str(), NULL, SND_FILENAME | SND_ASYNC);
+                }
+                ImGui::PopStyleColor();
+            }
         }
-        ImGui::PopStyleColor();
         
         ImGui::TextWrapped("%s", msg.text.c_str());
+
         ImGui::Separator();
     }
     // 自动滚动到底部

@@ -72,6 +72,7 @@ private:
     struct ChatMessage {
         std::string role;
         std::string text;
+        std::string audioPath;
     };
     std::vector<ChatMessage> m_chatHistory;
     std::string m_systemPrompt = "你是一个热爱二次元的活泼日本女高中生，你把我当做崇拜的前辈，在回复时语气元气满满，并且常用「〜だよね」「〜かな」等语气词结尾。请保持回复简短自然。";
