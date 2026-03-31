@@ -223,11 +223,11 @@ void AppUI::DrawLeftPanel() {
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.3f, 0.3f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.8f, 0.3f, 0.3f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.8f, 0.3f, 0.3f, 1.0f));
-        if (ImGui::Button("正在倾听录音... [再次点击停顿转写]", ImVec2(ImGui::GetContentRegionAvail().x, 30))) {
+        if (ImGui::Button("正在倾听... [再次点击停顿转写]", ImVec2(ImGui::GetContentRegionAvail().x, 30))) {
             if (m_speechRecognizer.has_value()) {
                 try {
                     auto recognizer = std::any_cast<winrt::Windows::Media::SpeechRecognition::SpeechRecognizer>(m_speechRecognizer);
-                    recognizer.StopRecognitionAsync();
+                    recognizer.ContinuousRecognitionSession().StopAsync();
                 } catch(...) {}
             }
         }
@@ -568,8 +568,8 @@ Task<void> AppUI::RecognizeSpeechAsync(std::shared_ptr<bool> isCancelled) {
     using namespace winrt::Windows::Media::SpeechRecognition;
     using namespace winrt::Windows::Media::Capture;
 
-    std::string result_text;
     std::string new_status;
+    HANDLE hEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
 
     try {
         MediaCaptureInitializationSettings settings;
@@ -581,6 +581,7 @@ Task<void> AppUI::RecognizeSpeechAsync(std::shared_ptr<bool> isCancelled) {
         std::lock_guard<std::mutex> lock(m_uiMutex);
         m_apiStatus = "录音失败：未授权麦克风或设备不可用";
         m_isRecording = false;
+        if (hEvent) CloseHandle(hEvent);
         co_return;
     }
 
@@ -590,67 +591,97 @@ Task<void> AppUI::RecognizeSpeechAsync(std::shared_ptr<bool> isCancelled) {
 
         {
             std::lock_guard<std::mutex> lock(m_uiMutex);
-            m_apiStatus = "引擎就绪，请在使用麦克风说话...";
+            m_apiStatus = "引擎就绪，正在开启持续听写...";
             m_speechRecognizer = recognizer;
         }
 
-        winrt::Windows::Media::SpeechRecognition::SpeechRecognitionTopicConstraint constraint(
-            winrt::Windows::Media::SpeechRecognition::SpeechRecognitionScenario::Dictation, L"Dictation");
+        SpeechRecognitionTopicConstraint constraint(SpeechRecognitionScenario::Dictation, L"Dictation");
         recognizer.Constraints().Append(constraint);
         recognizer.Timeouts().EndSilenceTimeout(std::chrono::milliseconds(m_speechTimeoutMs));
         recognizer.Timeouts().InitialSilenceTimeout(std::chrono::milliseconds(m_speechTimeoutMs));
 
-        // [核心流式传输视觉增强] 订阅 Hypothesis 临时“假说”流式回调，用于实时上屏
-        auto token = recognizer.HypothesisGenerated([this](
-            winrt::Windows::Media::SpeechRecognition::SpeechRecognizer const&, 
-            winrt::Windows::Media::SpeechRecognition::SpeechRecognitionHypothesisGeneratedEventArgs const& args) 
+        // 1. Hypothesis Generated (临时假说)
+        auto token_hypo = recognizer.HypothesisGenerated([this](
+            SpeechRecognizer const&, 
+            SpeechRecognitionHypothesisGeneratedEventArgs const& args) 
         {
             std::lock_guard<std::mutex> lock(m_uiMutex);
-            m_apiStatus = "流式听写: " + winrt::to_string(args.Hypothesis().Text());
+            m_apiStatus = "听写中: " + winrt::to_string(args.Hypothesis().Text()) + " ...";
+        });
+
+        auto session = recognizer.ContinuousRecognitionSession();
+
+        // 2. Result Generated (遇到短句断点确信结果)
+        auto token_result = session.ResultGenerated([this](
+            SpeechContinuousRecognitionSession const&, 
+            SpeechContinuousRecognitionResultGeneratedEventArgs const& args)
+        {
+            if (args.Result().Status() == SpeechRecognitionResultStatus::Success) {
+                std::lock_guard<std::mutex> lock(m_uiMutex);
+                std::string confirmed_chunk = winrt::to_string(args.Result().Text());
+                
+                // 收到局部字串，当即推送进输入框
+                if (m_currentMode == AppMode::Typing) {
+                    size_t old_cap = m_inputText.capacity();
+                    m_inputText.erase(std::find(m_inputText.begin(), m_inputText.end(), '\0'), m_inputText.end());
+                    m_inputText += confirmed_chunk;
+                    size_t target_size = std::max(m_inputText.size() + 1024, old_cap);
+                    m_inputText.resize(target_size, '\0');
+                } else {
+                    size_t old_cap = m_chatInputText.capacity();
+                    m_chatInputText.erase(std::find(m_chatInputText.begin(), m_chatInputText.end(), '\0'), m_chatInputText.end());
+                    m_chatInputText += confirmed_chunk;
+                    size_t target_size = std::max(m_chatInputText.size() + 1024, old_cap);
+                    m_chatInputText.resize(target_size, '\0');
+                }
+                
+                m_apiStatus = "正在聆听下一句...";
+            }
+        });
+
+        // 3. Completed (会话关停终局事件)
+        auto token_completed = session.Completed([hEvent, &new_status](
+            SpeechContinuousRecognitionSession const&, 
+            SpeechContinuousRecognitionCompletedEventArgs const& args)
+        {
+            if (args.Status() == SpeechRecognitionResultStatus::TimeoutExceeded) {
+                new_status = "录音结束 (静音超时)";
+            } else if (args.Status() == SpeechRecognitionResultStatus::Success) {
+                new_status = "录音结束 (主动切断)";
+            } else {
+                new_status = "录音结束 (状态码: " + std::to_string(static_cast<int>(args.Status())) + ")";
+            }
+            SetEvent(hEvent); // 发送信号解锁当前背景协程线程
         });
 
         co_await recognizer.CompileConstraintsAsync();
-        SpeechRecognitionResult result = co_await recognizer.RecognizeAsync();
-        
-        // 记得注销事件，防止悬垂回调
-        recognizer.HypothesisGenerated(token);
+        co_await session.StartAsync();
 
-        if (result.Status() == SpeechRecognitionResultStatus::Success) {
-            result_text = winrt::to_string(result.Text());
-            new_status = "录音转写完成";
-        } else {
-            new_status = "未识别到有效的语音输入";
-        }
+        // 阻断此后台执行线程直到上面 Completed 事件发生。协程就此完美悬停。
+        WaitForSingleObject(hEvent, INFINITE);
+
+        // 清理侦听器，防止悬垂
+        recognizer.HypothesisGenerated(token_hypo);
+        session.ResultGenerated(token_result);
+        session.Completed(token_completed);
 
     } catch (winrt::hresult_error const& ex) {
-        new_status = "录音出现异常或已手动打断";
+        new_status = "录音出现异常或硬件被独占";
     }
 
-    // 更新 UI 安全临界区
+    if (hEvent) {
+        CloseHandle(hEvent);
+    }
+
+    // 更新 UI 恢复非录音状态
     {
         std::lock_guard<std::mutex> lock(m_uiMutex);
         m_speechRecognizer.reset();
-        if (*isCancelled) {
-            co_return; // 已被取消，安全退场
+        
+        if (!(*isCancelled)) {
+            m_apiStatus = new_status;
+            m_isRecording = false;
         }
-
-        if (!result_text.empty()) {
-            if (m_currentMode == AppMode::Typing) {
-                size_t old_cap = m_inputText.capacity();
-                m_inputText.erase(std::find(m_inputText.begin(), m_inputText.end(), '\0'), m_inputText.end());
-                m_inputText += result_text;
-                size_t target_size = std::max(m_inputText.size() + 1024, old_cap);
-                m_inputText.resize(target_size, '\0');
-            } else {
-                size_t old_cap = m_chatInputText.capacity();
-                m_chatInputText.erase(std::find(m_chatInputText.begin(), m_chatInputText.end(), '\0'), m_chatInputText.end());
-                m_chatInputText += result_text;
-                size_t target_size = std::max(m_chatInputText.size() + 1024, old_cap);
-                m_chatInputText.resize(target_size, '\0');
-            }
-        }
-        m_apiStatus = new_status;
-        m_isRecording = false;
     }
 }
 
@@ -755,7 +786,7 @@ void AppUI::DrawChatUI() {
             if (m_speechRecognizer.has_value()) {
                 try {
                     auto recognizer = std::any_cast<winrt::Windows::Media::SpeechRecognition::SpeechRecognizer>(m_speechRecognizer);
-                    recognizer.StopRecognitionAsync();
+                    recognizer.ContinuousRecognitionSession().StopAsync();
                 } catch(...) {}
             }
         }
