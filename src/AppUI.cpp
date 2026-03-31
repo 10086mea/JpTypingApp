@@ -6,6 +6,7 @@
 #include <winrt/Windows.Media.Capture.h>
 #include <winrt/Windows.Media.SpeechRecognition.h>
 #include <winrt/Windows.Globalization.h>
+#include <winrt/Windows.Foundation.Collections.h>
 
 // Header-only libraries
 #include "httplib.h"
@@ -168,6 +169,7 @@ void AppUI::Render() {
         if (ImGui::RadioButton("二次元聊天模式", &mode, 1)) m_currentMode = AppMode::Chat;
         
         ImGui::SliderInt("防抖延迟 (ms)", &m_debounceDelayMs, 100, 3000);
+        ImGui::SliderInt("录音静音超时判定 (ms)", &m_speechTimeoutMs, 1000, 10000);
         
         char sys_prompt_buf[1024];
         strncpy(sys_prompt_buf, m_systemPrompt.c_str(), sizeof(sys_prompt_buf) - 1);
@@ -221,7 +223,14 @@ void AppUI::DrawLeftPanel() {
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.3f, 0.3f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.8f, 0.3f, 0.3f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.8f, 0.3f, 0.3f, 1.0f));
-        ImGui::Button("正在倾听录音...", ImVec2(ImGui::GetContentRegionAvail().x, 30));
+        if (ImGui::Button("正在倾听录音... [再次点击停顿转写]", ImVec2(ImGui::GetContentRegionAvail().x, 30))) {
+            if (m_speechRecognizer.has_value()) {
+                try {
+                    auto recognizer = std::any_cast<winrt::Windows::Media::SpeechRecognition::SpeechRecognizer>(m_speechRecognizer);
+                    recognizer.StopRecognitionAsync();
+                } catch(...) {}
+            }
+        }
         ImGui::PopStyleColor(3);
     } else {
         if (ImGui::Button("语音输入 (日语)", ImVec2(ImGui::GetContentRegionAvail().x, 30))) {
@@ -582,10 +591,29 @@ Task<void> AppUI::RecognizeSpeechAsync(std::shared_ptr<bool> isCancelled) {
         {
             std::lock_guard<std::mutex> lock(m_uiMutex);
             m_apiStatus = "引擎就绪，请在使用麦克风说话...";
+            m_speechRecognizer = recognizer;
         }
+
+        winrt::Windows::Media::SpeechRecognition::SpeechRecognitionTopicConstraint constraint(
+            winrt::Windows::Media::SpeechRecognition::SpeechRecognitionScenario::Dictation, L"Dictation");
+        recognizer.Constraints().Append(constraint);
+        recognizer.Timeouts().EndSilenceTimeout(std::chrono::milliseconds(m_speechTimeoutMs));
+        recognizer.Timeouts().InitialSilenceTimeout(std::chrono::milliseconds(m_speechTimeoutMs));
+
+        // [核心流式传输视觉增强] 订阅 Hypothesis 临时“假说”流式回调，用于实时上屏
+        auto token = recognizer.HypothesisGenerated([this](
+            winrt::Windows::Media::SpeechRecognition::SpeechRecognizer const&, 
+            winrt::Windows::Media::SpeechRecognition::SpeechRecognitionHypothesisGeneratedEventArgs const& args) 
+        {
+            std::lock_guard<std::mutex> lock(m_uiMutex);
+            m_apiStatus = "流式听写: " + winrt::to_string(args.Hypothesis().Text());
+        });
 
         co_await recognizer.CompileConstraintsAsync();
         SpeechRecognitionResult result = co_await recognizer.RecognizeAsync();
+        
+        // 记得注销事件，防止悬垂回调
+        recognizer.HypothesisGenerated(token);
 
         if (result.Status() == SpeechRecognitionResultStatus::Success) {
             result_text = winrt::to_string(result.Text());
@@ -595,12 +623,13 @@ Task<void> AppUI::RecognizeSpeechAsync(std::shared_ptr<bool> isCancelled) {
         }
 
     } catch (winrt::hresult_error const& ex) {
-        new_status = "录音出现异常: " + winrt::to_string(ex.message());
+        new_status = "录音出现异常或已手动打断";
     }
 
     // 更新 UI 安全临界区
     {
         std::lock_guard<std::mutex> lock(m_uiMutex);
+        m_speechRecognizer.reset();
         if (*isCancelled) {
             co_return; // 已被取消，安全退场
         }
@@ -709,7 +738,14 @@ void AppUI::DrawChatUI() {
     // 语音输入按钮
     if (m_isRecording) {
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.3f, 0.3f, 1.0f));
-        ImGui::Button("正在倾听... (系统将自动结束录制)", ImVec2(width, 30));
+        if (ImGui::Button("正在倾听... [再次点击中止监听并转写]", ImVec2(width, 30))) {
+            if (m_speechRecognizer.has_value()) {
+                try {
+                    auto recognizer = std::any_cast<winrt::Windows::Media::SpeechRecognition::SpeechRecognizer>(m_speechRecognizer);
+                    recognizer.StopRecognitionAsync();
+                } catch(...) {}
+            }
+        }
         ImGui::PopStyleColor();
     } else {
         if (ImGui::Button("点击麦克风说话", ImVec2(width - 150, 30))) {

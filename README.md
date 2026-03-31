@@ -36,7 +36,7 @@ python gemini_service.py
 > 服务暴露在 `127.0.0.1:5000`，**请保持该黑框在后台长静默运行**。
 
 ### 3. 构建并运行 C++ 主程序
-建议在具有 MSVC 环境的 Windows 平台展开编译。项目配置极其干净，第三方框架（ImGui / HttpLib）均以源码或自动化形式内嵌。
+建议在具有 MSVC 环境的 Windows 平台展开编译。项目配置极其干净，第三方框架HttpLib以源码形式内嵌。imGUI需要拉取[imgui-module](https://github.com/stripe2933/imgui-module)到项目根目录下的/thirdparty/imgui，详见CMakeLists.txt
 ```bash
 # 回到项目根目录
 mkdir build

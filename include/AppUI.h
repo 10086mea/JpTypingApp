@@ -4,6 +4,7 @@
 #include <chrono>
 #include <mutex>
 #include <optional>
+#include <any>
 #include "CoroTask.h"
 
 struct GrammarError {
@@ -61,6 +62,8 @@ private:
     std::optional<Task<void>> m_speechTask;
     std::shared_ptr<std::mutex> m_speechCancelMutex;
     std::shared_ptr<bool> m_speechCancelled;
+    std::any m_speechRecognizer;
+    int m_speechTimeoutMs{3000};
 
     // Chat UI variables
     enum class AppMode { Typing, Chat };
